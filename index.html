@@ -14,12 +14,17 @@
   <link rel="icon" href="icons/icon-192.png" type="image/png">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="style.css">
+  <script>
+    // apply the saved theme before the first paint (no white flash in dark mode)
+    try { var t = (JSON.parse(localStorage.getItem('cashfresh:v1')) || {}).settings.theme; if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
 </head>
 <body>
   <header class="top">
-    <h1>Cash Fresh</h1>
+    <h1><img src="icons/icon-192.png" alt="" class="logo">Cash Fresh</h1>
     <nav class="tabs" role="tablist">
       <button class="tab active" data-view="spesa" role="tab">Spesa</button>
+      <button class="tab" data-view="lista" role="tab">Lista<span class="tab-badge" id="list-badge" hidden></span></button>
       <button class="tab" data-view="prodotti" role="tab">Prodotti</button>
       <button class="tab" data-view="storico" role="tab">Storico</button>
       <button class="tab" data-view="impostazioni" role="tab">Opzioni</button>
@@ -34,7 +39,7 @@
           <span class="label">Totale spesa</span>
           <span class="total" id="total">€ 0,00</span>
         </div>
-        <div class="bar" aria-hidden="true"><div class="bar-fill" id="bar-fill"></div></div>
+        <div class="bar" aria-hidden="true"><div class="bar-fill" id="bar-fill"></div><div class="bar-ticks" id="bar-ticks"></div></div>
         <div class="bar-caption" id="bar-caption"></div>
         <div class="split">
           <div class="split-box vouchers">
@@ -50,6 +55,12 @@
         </div>
         <p class="hint" id="hint"></p>
       </div>
+
+      <button type="button" class="card list-link" id="list-link" hidden>
+        <span class="list-link-icon" aria-hidden="true">✓</span>
+        <span class="list-link-text" id="list-link-text"></span>
+        <span class="list-link-go" aria-hidden="true">›</span>
+      </button>
 
       <form class="card add" id="add-form" autocomplete="off">
         <div class="name-row">
@@ -89,6 +100,46 @@
       <div class="actions" id="cart-actions">
         <button class="primary" id="close-trip">Concludi spesa</button>
         <button class="ghost danger" id="clear-trip">Svuota</button>
+      </div>
+    </section>
+
+    <!-- LISTA -->
+    <section id="view-lista" class="view">
+      <div class="card summary mini" id="mini-summary">
+        <div class="total-row">
+          <span class="label">Scontrino</span>
+          <span class="total" id="l-total">€ 0,00</span>
+        </div>
+        <div class="bar" aria-hidden="true"><div class="bar-fill" id="l-bar-fill"></div><div class="bar-ticks" id="l-bar-ticks"></div></div>
+        <div class="mini-split">
+          <span><strong id="l-vouchers">0</strong> buoni</span>
+          <span><strong id="l-cash">€ 0,00</strong> a parte</span>
+        </div>
+      </div>
+
+      <form class="card list-add" id="list-form" autocomplete="off">
+        <div class="name-row">
+          <input id="list-name" type="text" placeholder="Cosa ti serve?" enterkeyhint="done" aria-label="Prodotto da aggiungere alla lista">
+          <button type="submit" class="scan-btn plus-btn" aria-label="Aggiungi alla lista">+</button>
+        </div>
+        <div class="suggest" id="list-suggest"></div>
+      </form>
+
+      <div class="recent" id="list-often-wrap" hidden>
+        <h3>Compri spesso</h3>
+        <div class="chips" id="list-often"></div>
+      </div>
+
+      <div class="list-head" id="list-head" hidden>
+        <h3 id="list-title">Da prendere</h3>
+        <span class="muted small-text" id="list-estimate"></span>
+      </div>
+      <ul class="shop-list" id="shop-list"></ul>
+      <p class="empty" id="list-empty">La lista è vuota. Scrivi cosa ti serve o scegli tra i prodotti salvati. In negozio spunti i prodotti e il totale dello scontrino si aggiorna da solo.</p>
+
+      <div class="actions" id="list-actions" hidden>
+        <button class="ghost" id="list-clear-done">Togli dalla lista i prodotti presi</button>
+        <button class="ghost danger" id="list-clear">Svuota lista</button>
       </div>
     </section>
 
@@ -132,6 +183,15 @@
 
     <!-- IMPOSTAZIONI -->
     <section id="view-impostazioni" class="view">
+      <div class="card">
+        <h2>Aspetto</h2>
+        <div class="segmented" id="theme-picker" role="radiogroup" aria-label="Tema">
+          <button type="button" data-theme="auto" role="radio">Automatico</button>
+          <button type="button" data-theme="light" role="radio">Chiaro</button>
+          <button type="button" data-theme="dark" role="radio">Scuro</button>
+        </div>
+        <small class="muted">Automatico segue le impostazioni dell'iPhone.</small>
+      </div>
       <form class="card settings" id="settings-form">
         <label class="field">
           <span>Valore di un buono (€)</span>
@@ -171,6 +231,7 @@
       <div class="card">
         <button type="button" class="ghost danger" id="reset-all">Cancella tutti i dati</button>
         <small class="muted">I dati restano solo su questo telefono.</small>
+        <small class="muted version" id="app-version"></small>
       </div>
     </section>
   </main>
@@ -211,6 +272,7 @@
       <div class="pd-history" id="pd-history"></div>
       <button type="submit" class="primary" value="save">Salva</button>
       <button type="submit" class="ghost" value="cart" id="pd-cart">Salva e aggiungi alla spesa</button>
+      <button type="submit" class="ghost" value="list" id="pd-list">Salva e aggiungi alla lista</button>
       <div class="sheet-foot">
         <button type="submit" class="ghost small" value="cancel" formnovalidate>Chiudi</button>
         <button type="submit" class="ghost small danger" value="delete" id="pd-delete">Elimina</button>
