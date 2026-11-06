@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Cash Fresh</title>
+  <meta name="description" content="Conta la spesa e controlla i buoni pasto.">
+  <meta name="theme-color" content="#0f7b5f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Cash Fresh">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Cash Fresh</h1>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="spesa" role="tab">Spesa</button>
+      <button class="tab" data-view="storico" role="tab">Storico</button>
+      <button class="tab" data-view="impostazioni" role="tab">Impostazioni</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- SPESA -->
+    <section id="view-spesa" class="view active">
+      <div class="card summary" id="summary">
+        <div class="total-row">
+          <span class="label">Totale spesa</span>
+          <span class="total" id="total">€ 0,00</span>
+        </div>
+        <div class="bar" aria-hidden="true"><div class="bar-fill" id="bar-fill"></div></div>
+        <div class="bar-caption" id="bar-caption"></div>
+        <div class="split">
+          <div class="split-box vouchers">
+            <span class="split-label">Buoni da usare</span>
+            <span class="split-value" id="vouchers-used">0</span>
+            <span class="split-sub" id="vouchers-amount">€ 0,00</span>
+          </div>
+          <div class="split-box cash">
+            <span class="split-label">Da pagare a parte</span>
+            <span class="split-value" id="cash-due">€ 0,00</span>
+            <span class="split-sub">contanti o carta</span>
+          </div>
+        </div>
+        <p class="hint" id="hint"></p>
+      </div>
+
+      <form class="card add" id="add-form" autocomplete="off">
+        <div class="name-row">
+          <input id="item-name" type="text" placeholder="Prodotto (facoltativo)" enterkeyhint="next" list="known-names">
+          <button type="button" class="scan-btn" id="scan-btn" aria-label="Scansiona codice a barre">
+            <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M3 5h2v14H3zm3 0h1v14H6zm2 0h2v14H8zm3 0h1v14h-1zm3 0h2v14h-2zm3 0h1v14h-1zm2 0h2v14h-2z"/></svg>
+          </button>
+        </div>
+        <datalist id="known-names"></datalist>
+        <p class="barcode-note" id="barcode-note" hidden></p>
+        <div class="add-row">
+          <label class="field">
+            <span>Prezzo €</span>
+            <input id="item-price" type="text" inputmode="decimal" placeholder="0,00" required enterkeyhint="done">
+          </label>
+          <label class="field qty-field">
+            <span>Quantità</span>
+            <div class="stepper">
+              <button type="button" data-step="-1" aria-label="Meno">−</button>
+              <input id="item-qty" type="number" inputmode="numeric" min="1" value="1">
+              <button type="button" data-step="1" aria-label="Più">+</button>
+            </div>
+          </label>
+        </div>
+        <button type="submit" class="primary">Aggiungi</button>
+      </form>
+
+      <div class="recent" id="recent-wrap" hidden>
+        <h3>Aggiungi di nuovo</h3>
+        <div class="chips" id="recent"></div>
+      </div>
+
+      <h3 class="receipt-title" id="receipt-title" hidden>Scontrino virtuale</h3>
+      <ul class="items" id="items"></ul>
+      <p class="empty" id="empty">Nessun prodotto. Aggiungi il primo prezzo qui sopra.</p>
+
+      <div class="actions" id="cart-actions">
+        <button class="primary" id="close-trip">Concludi spesa</button>
+        <button class="ghost danger" id="clear-trip">Svuota</button>
+      </div>
+    </section>
+
+    <!-- STORICO -->
+    <section id="view-storico" class="view">
+      <div class="card">
+        <h2 id="month-title">Questo mese</h2>
+        <div class="stats">
+          <div><span class="stat" id="m-total">€ 0,00</span><span class="stat-label">spesi</span></div>
+          <div><span class="stat" id="m-vouchers">0</span><span class="stat-label">buoni usati</span></div>
+          <div><span class="stat" id="m-cash">€ 0,00</span><span class="stat-label">a parte</span></div>
+        </div>
+      </div>
+      <ul class="history" id="history"></ul>
+      <p class="empty" id="history-empty">Nessuna spesa salvata.</p>
+    </section>
+
+    <!-- IMPOSTAZIONI -->
+    <section id="view-impostazioni" class="view">
+      <form class="card settings" id="settings-form">
+        <label class="field">
+          <span>Valore di un buono (€)</span>
+          <input id="s-value" type="text" inputmode="decimal">
+        </label>
+        <label class="field">
+          <span>Massimo buoni per singola spesa</span>
+          <input id="s-max" type="number" inputmode="numeric" min="1">
+          <small>Di solito 8 buoni per scontrino.</small>
+        </label>
+        <label class="field">
+          <span>Buoni che hai ancora</span>
+          <input id="s-wallet" type="number" inputmode="numeric" min="0">
+          <small>Si scala da solo quando concludi una spesa.</small>
+        </label>
+        <label class="field">
+          <span>Buoni che ricevi ogni mese</span>
+          <input id="s-monthly" type="number" inputmode="numeric" min="0">
+          <small>Serve per il pulsante "Ricarica buoni del mese".</small>
+        </label>
+        <button type="submit" class="primary">Salva</button>
+        <button type="button" class="ghost" id="refill">Ricarica buoni del mese</button>
+        <p class="saved" id="saved" hidden>Salvato ✓</p>
+      </form>
+      <div class="card">
+        <h2>Prodotti salvati</h2>
+        <p class="muted small-text" id="catalog-count"></p>
+        <button type="button" class="ghost" id="clear-catalog">Dimentica i prodotti salvati</button>
+      </div>
+      <div class="card">
+        <button type="button" class="ghost danger" id="reset-all">Cancella tutti i dati</button>
+        <small class="muted">I dati restano solo su questo telefono.</small>
+      </div>
+    </section>
+  </main>
+
+  <div class="scanner" id="scanner" hidden>
+    <video id="scan-video" playsinline muted autoplay></video>
+    <div class="scan-frame" aria-hidden="true"></div>
+    <p class="scan-msg" id="scan-msg">Inquadra il codice a barre</p>
+    <button type="button" class="scan-close" id="scan-close">Annulla</button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
