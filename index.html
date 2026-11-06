@@ -20,8 +20,9 @@
     <h1>Cash Fresh</h1>
     <nav class="tabs" role="tablist">
       <button class="tab active" data-view="spesa" role="tab">Spesa</button>
+      <button class="tab" data-view="prodotti" role="tab">Prodotti</button>
       <button class="tab" data-view="storico" role="tab">Storico</button>
-      <button class="tab" data-view="impostazioni" role="tab">Impostazioni</button>
+      <button class="tab" data-view="impostazioni" role="tab">Opzioni</button>
     </nav>
   </header>
 
@@ -91,6 +92,30 @@
       </div>
     </section>
 
+    <!-- PRODOTTI -->
+    <section id="view-prodotti" class="view">
+      <div class="card catalog-tools">
+        <div class="name-row">
+          <input id="cat-search" type="search" placeholder="Cerca prodotto, marca o codice" autocomplete="off" enterkeyhint="search">
+          <button type="button" class="scan-btn" id="cat-scan" aria-label="Scansiona per salvare un prodotto">
+            <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M3 5h2v14H3zm3 0h1v14H6zm2 0h2v14H8zm3 0h1v14h-1zm3 0h2v14h-2zm3 0h1v14h-1zm2 0h2v14h-2z"/></svg>
+          </button>
+        </div>
+        <div class="cat-bar">
+          <span class="muted small-text" id="catalog-count"></span>
+          <select id="cat-sort" aria-label="Ordina">
+            <option value="used">Usati di recente</option>
+            <option value="count">Più comprati</option>
+            <option value="name">Nome A-Z</option>
+            <option value="price">Prezzo</option>
+          </select>
+        </div>
+        <button type="button" class="ghost" id="cat-new">+ Nuovo prodotto</button>
+      </div>
+      <ul class="catalog" id="catalog"></ul>
+      <p class="empty" id="catalog-empty">Nessun prodotto salvato. Scansiona un codice a barre: nome e marca arrivano da Open Food Facts, il prezzo lo scrivi tu una volta sola.</p>
+    </section>
+
     <!-- STORICO -->
     <section id="view-storico" class="view">
       <div class="card">
@@ -132,9 +157,16 @@
         <p class="saved" id="saved" hidden>Salvato ✓</p>
       </form>
       <div class="card">
-        <h2>Prodotti salvati</h2>
-        <p class="muted small-text" id="catalog-count"></p>
-        <button type="button" class="ghost" id="clear-catalog">Dimentica i prodotti salvati</button>
+        <h2>Database prodotti</h2>
+        <label class="check">
+          <input type="checkbox" id="s-online">
+          <span>Cerca nome e marca su Open Food Facts quando scansioni un prodotto nuovo</span>
+        </label>
+        <button type="button" class="ghost" id="cat-export">Esporta backup prodotti</button>
+        <button type="button" class="ghost" id="cat-import">Importa backup prodotti</button>
+        <input type="file" id="cat-file" accept="application/json,.json" hidden>
+        <button type="button" class="ghost danger" id="clear-catalog">Dimentica i prodotti salvati</button>
+        <small class="muted">Open Food Facts è un database libero e gratuito. Non contiene i prezzi: quelli li impara l'app da te.</small>
       </div>
       <div class="card">
         <button type="button" class="ghost danger" id="reset-all">Cancella tutti i dati</button>
@@ -149,6 +181,44 @@
     <p class="scan-msg" id="scan-msg">Inquadra il codice a barre</p>
     <button type="button" class="scan-close" id="scan-close">Annulla</button>
   </div>
+
+  <dialog class="sheet" id="prod-dialog">
+    <form method="dialog" id="prod-form" autocomplete="off">
+      <div class="sheet-head">
+        <img id="pd-img" alt="" hidden>
+        <div class="sheet-title">
+          <h2 id="pd-title">Prodotto</h2>
+          <span class="muted small-text" id="pd-code"></span>
+        </div>
+      </div>
+      <label class="field">
+        <span>Nome</span>
+        <input id="pd-name" type="text" placeholder="Es. Latte intero 1 L">
+      </label>
+      <label class="field">
+        <span>Marca</span>
+        <input id="pd-brand" type="text" placeholder="Facoltativa">
+      </label>
+      <label class="field">
+        <span>Codice a barre</span>
+        <input id="pd-barcode" type="text" inputmode="numeric" placeholder="Facoltativo">
+      </label>
+      <label class="field">
+        <span>Prezzo €</span>
+        <input id="pd-price" type="text" inputmode="decimal" placeholder="0,00">
+      </label>
+      <p class="pd-status" id="pd-status" hidden></p>
+      <div class="pd-history" id="pd-history"></div>
+      <button type="submit" class="primary" value="save">Salva</button>
+      <button type="submit" class="ghost" value="cart" id="pd-cart">Salva e aggiungi alla spesa</button>
+      <div class="sheet-foot">
+        <button type="submit" class="ghost small" value="cancel" formnovalidate>Chiudi</button>
+        <button type="submit" class="ghost small danger" value="delete" id="pd-delete">Elimina</button>
+      </div>
+    </form>
+  </dialog>
+
+  <button type="button" class="toast" id="toast" role="status" hidden></button>
 
   <script src="app.js"></script>
 </body>
