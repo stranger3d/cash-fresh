@@ -118,11 +118,64 @@ $('card-add').addEventListener('click', () => openCardEditor(null));
 $('card-add-top').addEventListener('click', () => openCardEditor(null));
 
 // ---------- pages ----------
+// Pages slide in from the right like an iPhone push, and slide back out when closed.
+// A swipe from the left edge closes them too, following the finger.
+function syncPageOpen() {
+  document.documentElement.classList.toggle('page-open', !$('card-view').hidden || !$('card-edit').hidden);
+}
 function showPage(id, on) {
   const el = $(id);
-  el.hidden = !on;
-  if (on) { el.scrollTop = 0; el.classList.remove('in'); void el.offsetWidth; el.classList.add('in'); }
-  document.documentElement.classList.toggle('page-open', !$('card-view').hidden || !$('card-edit').hidden);
+  clearTimeout(el._outT);
+  el.classList.remove('out', 'swiping');
+  el.style.transform = '';
+  if (on) {
+    el.hidden = false;
+    el.scrollTop = 0; el.classList.remove('in'); void el.offsetWidth; el.classList.add('in');
+  } else if (!el.hidden && !reduceMotion()) {
+    el.classList.remove('in');
+    el.classList.add('out');
+    el._outT = setTimeout(() => { el.hidden = true; el.classList.remove('out'); el.style.transform = ''; syncPageOpen(); }, 260);
+    return;
+  } else {
+    el.hidden = true;
+  }
+  syncPageOpen();
+}
+
+function edgeSwipe(el, close) {
+  let s = null;
+  el.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    if (e.touches.length !== 1 || t.clientX > 28) return;
+    s = { x: t.clientX, y: t.clientY, dx: 0, v: 0, t: performance.now(), on: false };
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (!s) return;
+    const t = e.touches[0];
+    const dx = t.clientX - s.x, dy = t.clientY - s.y;
+    if (!s.on) {
+      if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 8) { s = null; return; }
+      if (dx < 8) return;
+      s.on = true;
+      el.classList.remove('in');
+      el.classList.add('swiping');
+    }
+    if (e.cancelable) e.preventDefault();
+    const now = performance.now();
+    s.v = 0.8 * ((dx - s.dx) / Math.max(1, now - s.t)) + 0.2 * s.v;
+    s.dx = Math.max(0, dx); s.t = now;
+    el.style.transform = `translate3d(${s.dx}px, 0, 0)`;
+  }, { passive: false });
+  const end = () => {
+    if (!s) return;
+    const d = s; s = null;
+    if (!d.on) return;
+    el.classList.remove('swiping');
+    if (d.dx > el.offsetWidth * 0.35 || d.v > 0.5) close();
+    else { el.classList.add('snap'); el.style.transform = ''; setTimeout(() => el.classList.remove('snap'), 320); }
+  };
+  el.addEventListener('touchend', end);
+  el.addEventListener('touchcancel', end);
 }
 
 // ---------- card detail ----------
@@ -304,6 +357,8 @@ function closeEditor() {
 }
 
 $('ce-back').addEventListener('click', closeEditor);
+edgeSwipe($('card-view'), closeCard);
+edgeSwipe($('card-edit'), closeEditor);
 $('ce-delete').addEventListener('click', () => deleteCard(editId));
 
 $('ce-swatches').innerHTML = CARD_SWATCHES.map((c) =>

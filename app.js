@@ -270,7 +270,7 @@ function renderReceipts(recs, isOver, isNear) {
     const cls = ['rcpt', state.addTo === i ? 'active' : '', isOver(x) ? 'over' : isNear(x) ? 'at-limit' : ''].join(' ');
     return `<button type="button" class="${cls}" data-r="${i}" aria-pressed="${state.addTo === i}">
       <span class="rcpt-head"><strong>Scontrino ${i + 1}</strong><span>${euro(x.total)}</span></span>
-      <span class="bar"><span class="bar-fill" style="width:${pct}%"></span></span>
+      <span class="bar"><span class="bar-fill" style="transform:scaleX(${pct / 100})"></span></span>
       <span class="rcpt-sub">${x.r.used} ${x.r.used === 1 ? 'buono' : 'buoni'} · ${euro(x.r.cash)} a parte</span>
       <span class="rcpt-add">${state.addTo === i ? '✓ aggiungi qui' : 'tocca per aggiungere qui'}</span>
     </button>`;
@@ -280,7 +280,7 @@ function renderReceipts(recs, isOver, isNear) {
 // Progress bar toward the voucher limit, with one notch per voucher.
 function paintBar(fill, ticks, total, r) {
   const pct = r.limit > 0 ? Math.min(100, (total / r.limit) * 100) : 100;
-  fill.style.width = pct + '%';
+  fill.style.transform = `scaleX(${(pct / 100).toFixed(4)})`;
   const n = r.cap;
   if (ticks.dataset.n !== String(n)) {
     ticks.dataset.n = n;
