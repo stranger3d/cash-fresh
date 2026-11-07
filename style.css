@@ -17,6 +17,9 @@
   /* home: tinted top, panel with the numbers, round quick actions */
   --home-top: #e8dff4; --panel: #f6f4f9; --qa: #ffffff; --qa-ink: #3d2d5c; --row-ic: #ffffff; --sheet: #f6f4f9;
   --ease: cubic-bezier(.2,.8,.2,1);
+  /* motion: a spring-like curve for things that move into place, and a small overshoot for presses */
+  --spring: cubic-bezier(.22, 1, .36, 1);
+  --bounce: cubic-bezier(.34, 1.56, .64, 1);
   color-scheme: light;
 }
 
@@ -65,8 +68,14 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 
 #bs-body > .view { max-width: 560px; margin: 0 auto; }
 .view { display: none; }
-.view.active { display: block; animation: view-in .22s var(--ease); }
-@keyframes view-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.view.active { display: block; }
+/* opening a section: its blocks rise in one after the other */
+.view.active > * { animation: view-in .42s var(--spring) both; }
+.view.active > :nth-child(2) { animation-delay: .03s; }
+.view.active > :nth-child(3) { animation-delay: .06s; }
+.view.active > :nth-child(4) { animation-delay: .09s; }
+.view.active > :nth-child(n+5) { animation-delay: .12s; }
+@keyframes view-in { from { opacity: 0; transform: translate3d(0, 14px, 0); } to { opacity: 1; transform: none; } }
 
 .card {
   background: var(--card); border-radius: var(--radius);
@@ -84,10 +93,10 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .total { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .bar { position: relative; height: 12px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 10px 0 6px; }
 .bar-fill {
-  height: 100%; width: 0; border-radius: 99px;
+  height: 100%; width: 100%; transform: scaleX(0); transform-origin: left center;
   background: linear-gradient(90deg, color-mix(in srgb, var(--ok) 70%, #fff), var(--ok));
   background-color: var(--ok);
-  transition: width .45s var(--ease), background-color .25s;
+  transition: transform .55s var(--spring), background-color .25s;
 }
 .at-limit .bar-fill { background: var(--amber); }
 .over .bar-fill { background: var(--red); animation: pulse 1.6s ease-in-out infinite; }
@@ -509,8 +518,16 @@ html.page-open, html.page-open body { overflow: hidden; }
   padding-bottom: calc(24px + env(safe-area-inset-bottom));
 }
 .page[hidden] { display: none; }
-.page.in { animation: page-in .28s var(--ease); }
-@keyframes page-in { from { transform: translateX(28px); opacity: .3; } }
+.page { box-shadow: -10px 0 40px rgba(0,0,0,.35); }
+.page.in { animation: page-in .46s var(--spring); }
+.page.out { animation: page-out .26s cubic-bezier(.4, 0, .9, .6) forwards; pointer-events: none; }
+.page.snap { transition: transform .3s var(--spring); }
+.page.swiping { transition: none; }
+@keyframes page-in { from { transform: translate3d(100%, 0, 0); } }
+@keyframes page-out { to { transform: translate3d(100%, 0, 0); } }
+/* the card itself lands a moment after the page, like it was picked from the wallet */
+.page.in .ctile.big, .page.in .code-box { animation: card-land .5s var(--spring) .06s both; }
+@keyframes card-land { from { opacity: 0; transform: translate3d(0, 18px, 0) scale(.94); } }
 .page-head {
   position: sticky; top: 0; z-index: 2; background: var(--bg);
   display: grid; grid-template-columns: 40px 1fr 40px; align-items: center; gap: 8px;
@@ -571,7 +588,8 @@ html.page-open, html.page-open body { overflow: hidden; }
 /* =========================================================
    Home + bottom sheet (Nov 2026)
    ========================================================= */
-:root { --sp: 0; --spring: cubic-bezier(.22, 1, .36, 1); }
+:root { --sp: 0; }
+.home, .scrim { --sp: 0; }
 
 .home {
   position: fixed; inset: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain;
@@ -579,14 +597,31 @@ html.page-open, html.page-open body { overflow: hidden; }
   padding-bottom: calc(110px + env(safe-area-inset-bottom));
   transform-origin: 50% 0;
   transform: translateY(calc(var(--sp) * (env(safe-area-inset-top) + 6px))) scale(calc(1 - var(--sp) * .06));
-  border-radius: calc(var(--sp) * 28px);
   will-change: transform;
 }
-.sheet-animate .home { transition: transform .5s var(--spring), border-radius .5s var(--spring); }
+.home.lifted { border-radius: 28px; }
+.home.sheet-animate { transition: transform .5s var(--spring); }
+/* the top bar stays put while the home scrolls; once the big numbers are gone it turns
+   solid and shows them in one compact line */
 .home-top {
+  position: sticky; top: 0; z-index: 5;
   display: flex; align-items: center; gap: 10px; max-width: 560px; margin: 0 auto;
   padding: calc(10px + env(safe-area-inset-top)) 16px 18px;
 }
+.home-top::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: calc(50% - 50vw); right: calc(50% - 50vw); z-index: -1; background: var(--panel);
+  opacity: 0; transition: opacity .25s var(--ease); box-shadow: 0 1px 0 var(--line);
+}
+.home.compact .home-top::before { opacity: 1; }
+.home-compact {
+  position: absolute; left: 16px; right: 16px; bottom: -6px; display: flex; justify-content: space-between;
+  font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; pointer-events: none;
+  opacity: 0; transform: translate3d(0, 8px, 0); transition: opacity .2s var(--ease), transform .35s var(--spring);
+}
+.home-compact b { color: var(--text); font-weight: 800; }
+.home.compact .home-top { padding-bottom: 30px; margin-bottom: -12px; }
+.home.compact .home-compact { opacity: 1; transform: none; }
+.hero, .hero-bar { will-change: transform, opacity; transform-origin: 50% 0; }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 800; font-size: 19px; letter-spacing: -0.02em; flex: 0 0 auto; }
 .round-btn {
   width: 48px; height: 48px; border: 0; border-radius: 50%; flex: 0 0 auto;
@@ -697,7 +732,7 @@ html.page-open, html.page-open body { overflow: hidden; }
   position: fixed; inset: 0; z-index: 15; background: #000; opacity: calc(var(--sp) * .55);
   pointer-events: none;
 }
-.sheet-animate .scrim { transition: opacity .5s var(--spring); }
+.scrim.sheet-animate { transition: opacity .5s var(--spring); }
 .sheet-open .scrim { pointer-events: auto; }
 .bsheet {
   position: fixed; left: 0; right: 0; bottom: 0; top: calc(env(safe-area-inset-top) + 14px); z-index: 20;
@@ -747,6 +782,30 @@ html:not(.sheet-open) #bs-close { opacity: 0; transform: scale(.6); pointer-even
 .sheet[open] { animation: sheet-in .4s var(--spring); }
 @keyframes sheet-in { from { transform: translateY(100%); } }
 
+/* press feedback: in fast, out with a small spring, like native buttons */
+button, a, label, select { touch-action: manipulation; }
+.round-btn, .hero-num, .qa-ic, .store-card, .hcard, button.ctile, .pill, .primary, .ghost, .chip, .sug, .prod, .tick {
+  transition-timing-function: var(--bounce);
+}
+.round-btn:active, .hero-num:active, .qa:active .qa-ic, .store-card:active, .hcard:active, button.ctile:active,
+.pill:active, .primary:active, .ghost:active, .chip:active, .sug:active, .prod:active, .tick:active, .row:active {
+  transition-duration: 60ms;
+}
+
+/* first open: the home blocks rise in one after the other */
+.boot .home-top, .boot .panel > * { animation: view-in .55s var(--spring) both; }
+.boot .panel > :nth-child(2) { animation-delay: .04s; }
+.boot .panel > :nth-child(3) { animation-delay: .08s; }
+.boot .panel > :nth-child(4) { animation-delay: .11s; }
+.boot .panel > :nth-child(5) { animation-delay: .14s; }
+.boot .panel > :nth-child(n+6) { animation-delay: .17s; }
+.boot .bsheet { animation: peek-in .6s var(--spring) .15s both; }
+@keyframes peek-in { from { translate: 0 120px; } }
+
+/* long product lists: rows off screen are not laid out or painted until scrolled near */
+.prod { content-visibility: auto; contain-intrinsic-size: auto 72px; }
+
 @media (prefers-reduced-motion: reduce) {
   .home { transform: none !important; border-radius: 0 !important; }
+  .hero, .hero-bar { transform: none !important; opacity: 1 !important; }
 }

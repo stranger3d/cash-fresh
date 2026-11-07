@@ -35,6 +35,8 @@ function renderHome() {
   $('h-vouchers-of').textContent = `di ${cap}`;
   $('h-vouchers-eur').textContent = euro(used * s.value);
   countTo($('h-cash'), cash);
+  $('hc-v').textContent = `${used}/${cap}`;
+  $('hc-cash').textContent = euro(cash);
   $('h-total').textContent = `Spesa ${euro(total)}`;
   const single = recs[0].r;
   paintBar($('h-bar-fill'), $('h-bar-ticks'), total,
@@ -107,23 +109,46 @@ function measureSheet() {
   if (!sheet.classList.contains('dragging')) placeSheet(sheetOpen ? 0 : closedY, false);
 }
 
-function placeSheet(y, animate) {
+// Only the sheet, the home behind it and the scrim move: the progress value is written
+// on those three elements (not on <html>), so a drag frame restyles three nodes instead
+// of the whole page. Everything animated is transform or opacity, which the iPhone runs
+// on the GPU without layout.
+const homeEl = $('home');
+const scrimEl = $('scrim');
+let lifted = false;
+function placeSheet(y, animate, dur) {
   sheetY = y;
+  const d = animate ? `${(dur || 0.5).toFixed(3)}s` : '';
   sheet.classList.toggle('animate', !!animate);
+  homeEl.classList.toggle('sheet-animate', !!animate);
+  scrimEl.classList.toggle('sheet-animate', !!animate);
+  sheet.style.transitionDuration = homeEl.style.transitionDuration = scrimEl.style.transitionDuration = d;
   sheet.style.transform = `translate3d(0, ${y}px, 0)`;
   const p = closedY ? Math.min(1, Math.max(0, 1 - y / closedY)) : (sheetOpen ? 1 : 0);
-  root.style.setProperty('--sp', p.toFixed(3));
-  root.classList.toggle('sheet-animate', !!animate);
+  const v = p.toFixed(3);
+  homeEl.style.setProperty('--sp', v);
+  scrimEl.style.setProperty('--sp', v);
+  // rounded corners on the home only while it sits behind the sheet (no per-frame repaint)
+  const l = p > 0.02;
+  if (l !== lifted) { lifted = l; homeEl.classList.toggle('lifted', l); }
 }
 
-function setSheet(open) {
+// Settle time from the finger's speed: a quick flick lands fast, a slow release eases in.
+function settleTime(target, v) {
+  const dist = Math.abs(target - sheetY);
+  const speed = Math.abs(v || 0); // px per ms
+  if (speed < 0.2) return 0.5;
+  return Math.min(0.5, Math.max(0.26, dist / speed / 1000 * 1.8));
+}
+
+function setSheet(open, dur) {
   const was = sheetOpen;
   sheetOpen = open;
   root.classList.toggle('sheet-open', open);
   sheet.setAttribute('aria-modal', open ? 'true' : 'false');
   $('home').inert = open;
   sheetBody.inert = !open;
-  placeSheet(open ? 0 : closedY, true);
+  placeSheet(open ? 0 : closedY, true, dur);
   paintPeek();
   if (!open && was) {
     const a = document.activeElement;
@@ -135,8 +160,9 @@ function setSheet(open) {
 }
 
 // called by showView() in app.js
+let nextSettle = 0;
 function sheetShows(view, keepClosed) {
-  if (!keepClosed && !sheetOpen) setSheet(true);
+  if (!keepClosed && !sheetOpen) { setSheet(true, nextSettle || undefined); nextSettle = 0; }
   else paintPeek();
 }
 
@@ -172,20 +198,25 @@ function dragMove(y, e) {
   let ny = drag.start + (y - drag.y0);
   if (ny < 0) ny = ny / 4;                       // rubber band above the top
   if (ny > closedY) ny = closedY + (ny - closedY) / 4;
-  placeSheet(ny, false);
+  // touchmove can fire more than once per frame: paint only the last position
+  pendingY = ny;
+  if (!dragRaf) dragRaf = requestAnimationFrame(() => { dragRaf = 0; if (pendingY != null) placeSheet(pendingY, false); pendingY = null; });
 }
+let dragRaf = 0, pendingY = null;
 function dragEnd() {
   if (!drag) return false;
   const d = drag;
   drag = null;
+  if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = 0; if (pendingY != null) placeSheet(pendingY, false); pendingY = null; }
   sheet.classList.remove('dragging');
   if (!d.active || !d.moved) { if (d.active) placeSheet(sheetOpen ? 0 : closedY, true); return false; }
   const fast = Math.abs(d.v) > 0.45;
   let open;
   if (fast) open = d.v < 0;
   else open = sheetY < closedY * (sheetOpen ? 0.3 : 0.75);
-  if (open && !sheetOpen) showView('spesa');
-  else setSheet(open);
+  const dur = settleTime(open ? 0 : closedY, d.v);
+  if (open && !sheetOpen) { nextSettle = dur; showView('spesa'); }
+  else setSheet(open, dur);
   return true;
 }
 
@@ -255,6 +286,32 @@ $('more-dialog').addEventListener('close', () => {
 });
 $('more-dialog').addEventListener('click', (e) => { if (e.target === $('more-dialog')) $('more-dialog').close('cancel'); });
 
+// ---------- home scroll: the numbers collapse into the top bar ----------
+// As the home scrolls, the two big numbers drift up slower than the page and fade, and a
+// compact line with the same numbers slides into the sticky top bar, so they stay in
+// sight. Work is done once per frame and only transform/opacity are written.
+const heroEl = $('hero');
+const heroBar = document.querySelector('.hero-bar');
+let homeRaf = 0, compact = false;
+function paintHomeScroll() {
+  homeRaf = 0;
+  const st = Math.max(0, homeEl.scrollTop);
+  if (!reduceMotion()) {
+    if (st < 320) {
+      const k = Math.min(1, st / 170);
+      heroEl.style.transform = `translate3d(0, ${(st * 0.35).toFixed(1)}px, 0) scale(${(1 - k * 0.06).toFixed(3)})`;
+      heroEl.style.opacity = (1 - k * 0.85).toFixed(3);
+      heroBar.style.opacity = (1 - k).toFixed(3);
+    }
+  }
+  const c = st > 130;
+  if (c !== compact) { compact = c; homeEl.classList.toggle('compact', c); }
+}
+homeEl.addEventListener('scroll', () => { if (!homeRaf) homeRaf = requestAnimationFrame(paintHomeScroll); }, { passive: true });
+
+// iPhone Safari shows :active (the press feedback) only when the page listens to touches.
+document.addEventListener('touchstart', () => {}, { passive: true });
+
 // ---------- start ----------
 (() => {
   const probe = document.createElement('div');
@@ -268,3 +325,8 @@ measureSheet();
 window.addEventListener('resize', measureSheet);
 window.addEventListener('orientationchange', () => setTimeout(measureSheet, 300));
 requestAnimationFrame(() => { measureSheet(); sheet.classList.add('ready'); });
+// first paint: the home content rises in, one block after the other
+if (!reduceMotion()) {
+  root.classList.add('boot');
+  setTimeout(() => root.classList.remove('boot'), 900);
+}
