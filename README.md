@@ -14,6 +14,7 @@ App per la spesa: conta i prezzi mentre fai la spesa e ti dice quanti buoni past
 - **Negozi**: scegli il negozio in alto nella scheda Spesa. Ogni prodotto ricorda il prezzo per negozio; dove non l'hai ancora visto viene proposto l'ultimo prezzo conosciuto. L'elenco (Conad, Lidl, Esselunga) si modifica in Opzioni.
 - **Due scontrini**: se superi il limite dei buoni e con due scontrini spenderesti meno a parte, l'app propone come dividere i prodotti. Ogni scontrino ha i suoi buoni e il suo resto; con ↔ sposti un prodotto, toccando uno scontrino scegli dove vanno i nuovi.
 - **Vibrazione**: un colpetto quando scansioni un codice e quando arrivi vicino o oltre il limite (su iPhone da iOS 18; si disattiva in Opzioni).
+- **Carte fedeltà**: scheda Carte, una griglia di tessere con i colori di ogni catena. Con + scansioni la carta (codici a barre e QR) o scrivi il numero, poi tocchi il negozio (Conad, Coop, Esselunga, Lidl, Eurospin, MD e altri) oppure "Altra carta" con nome, colore e logo da una foto. Toccando una tessera si apre il codice grande su sfondo bianco e lo schermo resta acceso. Se in Spesa scegli un negozio che ha una carta, compare "Mostra la carta". Nomi e colori dei negozi sono un'approssimazione del marchio, non loghi ufficiali. Le carte sono nel backup.
 - **Concludi spesa**: salva lo scontrino nello storico e scala i buoni usati dal saldo.
 - **Opzioni**: tema (automatico, chiaro, scuro), valore del buono (predefinito 11 €), massimo buoni per scontrino (predefinito 8), buoni rimasti e buoni mensili.
 
@@ -25,6 +26,6 @@ Apri il sito in Safari → Condividi → "Aggiungi alla schermata Home".
 
 ## Tecnica
 
-HTML, CSS e JavaScript senza build. Il lettore di codici a barre usa `BarcodeDetector` dove esiste e altrimenti [ZXing](https://github.com/zxing-js/library) (MIT), incluso in `vendor/`. Un service worker (`sw.js`) salva l'app sul telefono: si apre subito e funziona anche senza rete. Le foto e la ricerca su Open Food Facts restano solo online.
+HTML, CSS e JavaScript senza build. Il lettore di codici a barre usa `BarcodeDetector` dove esiste e altrimenti [ZXing](https://github.com/zxing-js/library) (MIT), incluso in `vendor/`. I codici delle carte fedeltà si disegnano con [JsBarcode](https://github.com/lindell/JsBarcode) e [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (MIT), anche loro in `vendor/`. Un service worker (`sw.js`) salva l'app sul telefono: si apre subito e funziona anche senza rete. Le foto e la ricerca su Open Food Facts restano solo online.
 
 **Pubblicare una nuova versione**: a ogni modifica dei file cambia `VERSION` in `sw.js`. Alla riapertura l'app scarica la nuova versione e si ricarica da sola (non mentre si sta scrivendo).
