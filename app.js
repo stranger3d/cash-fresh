@@ -12,6 +12,7 @@ const DEFAULTS = {
   addTo: 0,      // receipt that gets new products while split
   list: [],      // shopping list: { id, name, qty, key (catalog key or null), done, cartId, added }
   history: [],   // { id, date, total, vouchers, voucherValue, cash, items }
+  cards: [],     // loyalty cards: { id, chain (id in CHAINS or ''), name, number, format, bg, fg, logo (data URL), added, used }
   catalog: {}    // key -> { name, brand, quantity, image, barcode, unit ('kg' or none), price (last seen anywhere),
                  //          storePrices: { store: { p, d } }, prices: [{ p, d, s }], used, count }
 };
@@ -31,6 +32,7 @@ function load() {
         list: Array.isArray(raw.list) ? raw.list : [],
         history: Array.isArray(raw.history) ? raw.history : [],
         catalog: raw.catalog && typeof raw.catalog === 'object' ? raw.catalog : {},
+        cards: Array.isArray(raw.cards) ? raw.cards : [],
         split: !!raw.split,
         addTo: raw.addTo === 1 ? 1 : 0
       };
@@ -1104,7 +1106,18 @@ function clearPendingBarcode() {
 
 // ---------- barcode scanner ----------
 let scanStop = null;
-let scanMode = 'cart'; // 'cart' adds to the trip, 'catalog' opens the product editor
+let scanMode = 'cart'; // 'cart' adds to the trip, 'catalog' opens the product editor, 'card' reads a loyalty card
+let scanDone = null;   // 'card' mode: called with (code, format)
+
+// loyalty cards also use QR codes and older 1D formats; products only use EAN/UPC/Code 128
+const SCAN_BASE = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'];
+const SCAN_CARD = SCAN_BASE.concat(['code_39', 'itf', 'codabar', 'qr_code', 'data_matrix', 'pdf417', 'aztec']);
+// detector / ZXing names -> names used to draw the code again (JsBarcode, or QR)
+function normFormat(f) {
+  const k = String(f || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return ({ ean13: 'EAN13', ean8: 'EAN8', upca: 'UPC', upce: 'UPCE', code128: 'CODE128', code39: 'CODE39',
+    itf: 'ITF', codabar: 'codabar', qrcode: 'QR', qr: 'QR', upc: 'UPC' })[k] || '';
+}
 
 function loadZxing() {
   if (window.ZXing) return Promise.resolve(window.ZXing);
@@ -1117,19 +1130,23 @@ function loadZxing() {
   });
 }
 
-async function openScanner(mode) {
-  scanMode = mode === 'catalog' ? 'catalog' : 'cart';
+async function openScanner(mode, done) {
+  scanMode = mode === 'catalog' || mode === 'card' ? mode : 'cart';
+  scanDone = scanMode === 'card' ? done : null;
+  const wanted = scanMode === 'card' ? SCAN_CARD : SCAN_BASE;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     alert('La fotocamera non è disponibile su questo browser. Inserisci il prezzo a mano.');
     return;
   }
   const video = $('scan-video');
-  $('scan-msg').textContent = 'Inquadra il codice a barre';
+  $('scan-msg').textContent = scanMode === 'card' ? 'Inquadra il codice della carta' : 'Inquadra il codice a barre';
   $('scanner').hidden = false;
   const constraints = { video: { facingMode: { ideal: 'environment' } }, audio: false };
   try {
     if ('BarcodeDetector' in window) {
-      const detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'] });
+      let formats = wanted;
+      try { const sup = await BarcodeDetector.getSupportedFormats(); formats = wanted.filter((f) => sup.includes(f)); } catch (e) { /* use all */ }
+      const detector = new BarcodeDetector({ formats });
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       video.srcObject = stream;
       await video.play();
@@ -1139,7 +1156,7 @@ async function openScanner(mode) {
         if (!alive) return;
         try {
           const codes = await detector.detect(video);
-          if (codes.length) return onBarcode(codes[0].rawValue);
+          if (codes.length) return onBarcode(codes[0].rawValue, codes[0].format);
         } catch (e) { /* keep trying */ }
         setTimeout(tick, 150);
       };
@@ -1147,13 +1164,12 @@ async function openScanner(mode) {
     } else {
       const ZX = await loadZxing();
       const hints = new Map();
-      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS, [
-        ZX.BarcodeFormat.EAN_13, ZX.BarcodeFormat.EAN_8, ZX.BarcodeFormat.UPC_A, ZX.BarcodeFormat.UPC_E, ZX.BarcodeFormat.CODE_128
-      ]);
+      const zxNames = ['EAN_13', 'EAN_8', 'UPC_A', 'UPC_E', 'CODE_128'].concat(scanMode === 'card' ? ['CODE_39', 'ITF', 'CODABAR', 'QR_CODE', 'DATA_MATRIX', 'PDF_417', 'AZTEC'] : []);
+      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS, zxNames.map((n) => ZX.BarcodeFormat[n]).filter((v) => v !== undefined));
       const reader = new ZX.BrowserMultiFormatReader(hints, 200);
       scanStop = () => reader.reset();
       await reader.decodeFromConstraints(constraints, video, (result) => {
-        if (result) onBarcode(result.getText());
+        if (result) onBarcode(result.getText(), ZX.BarcodeFormat[result.getBarcodeFormat()]);
       });
     }
   } catch (err) {
@@ -1170,10 +1186,11 @@ function closeScanner() {
   $('scanner').hidden = true;
 }
 
-function onBarcode(code) {
+function onBarcode(code, format) {
   if (!scanStop) return; // already handled
   haptic(1);
   closeScanner();
+  if (scanMode === 'card') { const cb = scanDone; scanDone = null; if (cb) cb(code, normFormat(format)); return; }
   if (scanMode === 'catalog') return openEditor('b:' + code, code);
   const known = state.catalog['b:' + code];
   if (known) {
@@ -1405,8 +1422,8 @@ $('s-online').addEventListener('change', (e) => {
 // ---------- backup ----------
 $('cat-export').addEventListener('click', async () => {
   const n = Object.keys(state.catalog).length;
-  if (!n) return alert('Non ci sono prodotti da esportare.');
-  const data = JSON.stringify({ app: 'cash-fresh', type: 'catalog', version: 1, exported: new Date().toISOString(), catalog: state.catalog }, null, 1);
+  if (!n && !state.cards.length) return alert('Non ci sono prodotti né carte da esportare.');
+  const data = JSON.stringify({ app: 'cash-fresh', type: 'catalog', version: 2, exported: new Date().toISOString(), catalog: state.catalog, cards: state.cards }, null, 1);
   const name = `cash-fresh-prodotti-${new Date().toISOString().slice(0, 10)}.json`;
   const file = new File([data], name, { type: 'application/json' });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -1429,10 +1446,16 @@ $('cat-file').addEventListener('change', async (e) => {
   if (!f) return;
   try {
     const raw = JSON.parse(await f.text());
-    const n = importCatalog(raw && raw.catalog ? raw.catalog : raw);
+    const hasCards = raw && Array.isArray(raw.cards);
+    const n = hasCards && !raw.catalog ? 0 : importCatalog(raw && raw.catalog ? raw.catalog : raw);
+    const m = hasCards ? importCards(raw.cards) : 0;
     save();
     render();
-    alert(n ? `Importati ${n} prodotti.` : 'Nessun prodotto valido nel file.');
+    renderCards();
+    const parts = [];
+    if (n) parts.push(`${n} ${n === 1 ? 'prodotto' : 'prodotti'}`);
+    if (m) parts.push(`${m} ${m === 1 ? 'carta' : 'carte'}`);
+    alert(parts.length ? `Importati ${parts.join(' e ')}.` : 'Niente di nuovo da importare nel file.');
   } catch (err) {
     alert('File non valido: serve un backup esportato da Cash Fresh.');
   }
@@ -1608,12 +1631,13 @@ $('refill').addEventListener('click', () => {
 });
 
 $('reset-all').addEventListener('click', () => {
-  if (!confirm('Cancellare impostazioni, spesa in corso, lista e storico?')) return;
+  if (!confirm('Cancellare impostazioni, spesa in corso, lista, storico, prodotti e carte fedeltà?')) return;
   localStorage.removeItem(STORE_KEY);
   state = structuredClone(DEFAULTS);
   applyTheme();
   renderSettings();
   render();
+  renderCards();
 });
 
 function flashSaved() {
@@ -1782,6 +1806,7 @@ function renderStores() {
   $('store-list').innerHTML = stores.map((x) =>
     `<span class="store-chip">${escapeHtml(x)}<button type="button" data-del-store="${escapeHtml(x)}" aria-label="Togli ${escapeHtml(x)}">✕</button></span>`).join('') ||
     '<span class="muted small-text">Nessun negozio.</span>';
+  if (typeof paintStoreCard === 'function') paintStoreCard();
 }
 $('store-select').addEventListener('change', (e) => {
   if (e.target.value === '__edit') {
@@ -1793,7 +1818,9 @@ $('store-select').addEventListener('change', (e) => {
   state.settings.store = e.target.value;
   save();
   render();
-  if (state.settings.store) toast(`Prezzi di ${state.settings.store}`);
+  const card = state.settings.store && typeof cardForStore === 'function' ? cardForStore(state.settings.store) : null;
+  if (card) toast(`Prezzi di ${state.settings.store} · tocca per la carta`, () => openCard(card.id));
+  else if (state.settings.store) toast(`Prezzi di ${state.settings.store}`);
 });
 $('store-form').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -1871,7 +1898,7 @@ if ('serviceWorker' in navigator) {
   let pendingReload = false;
   const busy = () => {
     const a = document.activeElement;
-    return (a && (a.tagName === 'INPUT' || a.tagName === 'SELECT')) || $('prod-dialog').open || $('deal-dialog').open || !$('scanner').hidden;
+    return (a && (a.tagName === 'INPUT' || a.tagName === 'SELECT')) || $('prod-dialog').open || $('deal-dialog').open || !$('scanner').hidden || !$('card-view').hidden || !$('card-edit').hidden;
   };
   const reloadNow = () => {
     try { sessionStorage.setItem('cf-updated', '1'); } catch (e) { /* ignore */ }

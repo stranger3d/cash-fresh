@@ -25,6 +25,7 @@
     <nav class="tabs" role="tablist">
       <button class="tab active" data-view="spesa" role="tab">Spesa</button>
       <button class="tab" data-view="lista" role="tab">Lista<span class="tab-badge" id="list-badge" hidden></span></button>
+      <button class="tab" data-view="carte" role="tab">Carte</button>
       <button class="tab" data-view="prodotti" role="tab">Prodotti</button>
       <button class="tab" data-view="storico" role="tab">Storico</button>
       <button class="tab" data-view="impostazioni" role="tab">Opzioni</button>
@@ -41,6 +42,11 @@
         <span class="store-label">Negozio</span>
         <select id="store-select" aria-label="Negozio in cui sei"></select>
       </label>
+      <button type="button" class="card list-link store-card" id="store-card" hidden>
+        <span class="ctile mini" id="store-card-tile" aria-hidden="true"></span>
+        <span class="list-link-text" id="store-card-text"></span>
+        <span class="list-link-go" aria-hidden="true">›</span>
+      </button>
       <div class="card summary" id="summary">
         <div class="total-row">
           <span class="label">Totale spesa</span>
@@ -168,6 +174,19 @@
       </div>
     </section>
 
+    <!-- CARTE FEDELTA -->
+    <section id="view-carte" class="view">
+      <div class="wallet-head">
+        <h2 class="wallet-title">Carte fedeltà</h2>
+        <button type="button" class="icon-btn" id="card-add-top" aria-label="Aggiungi carta">
+          <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7z"/></svg>
+        </button>
+      </div>
+      <div class="wallet" id="wallet"></div>
+      <p class="empty" id="wallet-empty">Nessuna carta. Aggiungi le tessere dei tuoi supermercati: alla cassa le apri da qui con il codice a barre grande.</p>
+      <div class="pill-wrap"><button type="button" class="pill" id="card-add">Aggiungi carta</button></div>
+    </section>
+
     <!-- PRODOTTI -->
     <section id="view-prodotti" class="view">
       <div class="card catalog-tools">
@@ -263,8 +282,8 @@
           <input type="checkbox" id="s-online">
           <span>Cerca nome e marca su Open Food Facts quando scansioni un prodotto nuovo</span>
         </label>
-        <button type="button" class="ghost" id="cat-export">Esporta backup prodotti</button>
-        <button type="button" class="ghost" id="cat-import">Importa backup prodotti</button>
+        <button type="button" class="ghost" id="cat-export">Esporta backup (prodotti e carte)</button>
+        <button type="button" class="ghost" id="cat-import">Importa backup</button>
         <input type="file" id="cat-file" accept="application/json,.json" hidden>
         <button type="button" class="ghost danger" id="clear-catalog">Dimentica i prodotti salvati</button>
         <small class="muted">Open Food Facts è un database libero e gratuito. Non contiene i prezzi: quelli li impara l'app da te.</small>
@@ -282,6 +301,91 @@
     <div class="scan-frame" aria-hidden="true"></div>
     <p class="scan-msg" id="scan-msg">Inquadra il codice a barre</p>
     <button type="button" class="scan-close" id="scan-close">Annulla</button>
+  </div>
+
+  <!-- loyalty card: big barcode for the checkout -->
+  <div class="page" id="card-view" hidden>
+    <div class="page-head">
+      <button type="button" class="icon-btn" id="cv-back" aria-label="Indietro">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M15.4 5.4 14 4l-8 8 8 8 1.4-1.4L8.8 12z"/></svg>
+      </button>
+      <h2 class="page-title" id="cv-title"></h2>
+      <button type="button" class="icon-btn" id="cv-more" aria-label="Altre azioni" aria-haspopup="true">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="5" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="19" cy="12" r="2" fill="currentColor"/></svg>
+      </button>
+      <div class="menu" id="cv-menu" hidden>
+        <button type="button" id="cv-edit">Modifica carta</button>
+        <button type="button" class="danger" id="cv-delete">Elimina carta</button>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="ctile big" id="cv-tile"></div>
+      <div class="code-box" id="cv-box">
+        <div class="code-img" id="cv-code"></div>
+        <div class="code-num" id="cv-num"></div>
+      </div>
+      <p class="cv-hint" id="cv-hint"></p>
+    </div>
+  </div>
+
+  <!-- add / edit a loyalty card -->
+  <div class="page" id="card-edit" hidden>
+    <div class="page-head">
+      <button type="button" class="icon-btn" id="ce-back" aria-label="Annulla">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M15.4 5.4 14 4l-8 8 8 8 1.4-1.4L8.8 12z"/></svg>
+      </button>
+      <h2 class="page-title" id="ce-title">Nuova carta</h2>
+      <span class="icon-btn" aria-hidden="true"></span>
+    </div>
+    <form class="page-body" id="ce-form" autocomplete="off">
+      <div class="ctile big" id="ce-tile"></div>
+      <button type="button" class="primary" id="ce-scan">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M3 5h2v14H3zm3 0h1v14H6zm2 0h2v14H8zm3 0h1v14h-1zm3 0h2v14h-2zm3 0h1v14h-1zm2 0h2v14h-2z"/></svg>
+        Scansiona la carta
+      </button>
+      <label class="field">
+        <span>Numero della carta</span>
+        <input id="ce-number" type="text" inputmode="numeric" placeholder="Oppure scrivilo qui" enterkeyhint="done" spellcheck="false">
+      </label>
+      <p class="ce-note" id="ce-scanned" hidden></p>
+      <h3 class="ce-h">Di che negozio è?</h3>
+      <div class="chain-grid" id="ce-chains"></div>
+      <div id="ce-custom">
+        <label class="field">
+          <span>Nome sulla carta</span>
+          <input id="ce-name" type="text" placeholder="Es. Farmacia, Decathlon…" maxlength="40">
+        </label>
+        <div class="field">
+          <span>Colore</span>
+          <div class="swatches" id="ce-swatches"></div>
+        </div>
+        <div class="field">
+          <span>Logo (facoltativo)</span>
+          <div class="logo-row">
+            <button type="button" class="ghost" id="ce-logo">Carica il logo da una foto</button>
+            <button type="button" class="ghost" id="ce-logo-del" hidden>Togli logo</button>
+          </div>
+          <input type="file" id="ce-logo-file" accept="image/*" hidden>
+        </div>
+      </div>
+      <label class="field ce-format">
+        <span>Tipo di codice</span>
+        <select id="ce-format">
+          <option value="EAN13">EAN-13 (13 cifre)</option>
+          <option value="EAN8">EAN-8 (8 cifre)</option>
+          <option value="UPC">UPC-A (12 cifre)</option>
+          <option value="CODE128">Code 128</option>
+          <option value="CODE39">Code 39</option>
+          <option value="ITF">ITF (Interleaved 2 of 5)</option>
+          <option value="codabar">Codabar</option>
+          <option value="QR">QR code</option>
+        </select>
+        <small>Si imposta da solo quando scansioni la carta.</small>
+      </label>
+      <p class="ce-err" id="ce-err" hidden></p>
+      <button type="submit" class="primary">Salva carta</button>
+      <button type="button" class="ghost danger" id="ce-delete" hidden>Elimina carta</button>
+    </form>
   </div>
 
   <dialog class="sheet" id="prod-dialog">
@@ -354,5 +458,6 @@
   <button type="button" class="toast" id="toast" role="status" hidden></button>
 
   <script src="app.js"></script>
+  <script src="cards.js"></script>
 </body>
 </html>
