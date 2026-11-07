@@ -3,11 +3,17 @@
 const STORE_KEY = 'cashfresh:v1';
 
 const DEFAULTS = {
-  settings: { value: 1100, maxPerTrip: 8, wallet: 20, monthly: 20, online: true, theme: 'auto' }, // amounts in cents
-  cart: [],      // { id, name, price (cents), qty }
+  settings: { value: 1100, maxPerTrip: 8, wallet: 20, monthly: 20, online: true, theme: 'auto',
+    stores: ['Conad', 'Lidl', 'Esselunga'], store: '', haptics: true }, // amounts in cents
+  // receipt line: { id, name, price (cents, per kg when kg), qty, barcode,
+  //   kg (sold by weight), grams, deal: { t: '2x1'|'3x2'|'pct'|'price', v }, r (receipt 0 or 1) }
+  cart: [],
+  split: false,  // two receipts in the same trip, each with its own vouchers
+  addTo: 0,      // receipt that gets new products while split
   list: [],      // shopping list: { id, name, qty, key (catalog key or null), done, cartId, added }
   history: [],   // { id, date, total, vouchers, voucherValue, cash, items }
-  catalog: {}    // key -> { name, brand, quantity, image, barcode, price, prices: [{ p, d }], used, count }
+  catalog: {}    // key -> { name, brand, quantity, image, barcode, unit ('kg' or none), price (last seen anywhere),
+                 //          storePrices: { store: { p, d } }, prices: [{ p, d, s }], used, count }
 };
 
 let pendingBarcode = null;
@@ -24,7 +30,9 @@ function load() {
         cart: Array.isArray(raw.cart) ? raw.cart : [],
         list: Array.isArray(raw.list) ? raw.list : [],
         history: Array.isArray(raw.history) ? raw.history : [],
-        catalog: raw.catalog && typeof raw.catalog === 'object' ? raw.catalog : {}
+        catalog: raw.catalog && typeof raw.catalog === 'object' ? raw.catalog : {},
+        split: !!raw.split,
+        addTo: raw.addTo === 1 ? 1 : 0
       };
     }
   } catch (e) { /* ignore corrupted data */ }
@@ -66,13 +74,44 @@ function computeSplit(total, s) {
   return { cap, full, used, cash, remainder, toNext, limit, value };
 }
 
+// ---------- line totals: weight and offers ----------
+const byWeight = (it) => it.kg === true;
+const gramsLabel = (g) => g >= 1000 ? (g / 1000).toLocaleString('it-IT', { maximumFractionDigits: 3 }) + ' kg' : g + ' g';
+const perKg = (cents, g) => Math.round((cents * g) / 1000);
+
+// what the line would cost without the offer
+function lineFull(it) {
+  return byWeight(it) ? perKg(it.price, it.grams || 0) : it.price * it.qty;
+}
+
+// what the line really costs
+function lineTotal(it) {
+  const d = it.deal;
+  if (!d) return lineFull(it);
+  if (d.t === 'price') return byWeight(it) ? perKg(d.v, it.grams || 0) : d.v * it.qty;
+  if (d.t === 'pct') return Math.round((lineFull(it) * (100 - d.v)) / 100);
+  if ((d.t === '2x1' || d.t === '3x2') && !byWeight(it)) {
+    const n = d.t === '2x1' ? 2 : 3;
+    return it.price * (it.qty - Math.floor(it.qty / n));
+  }
+  return lineFull(it);
+}
+
+function dealLabel(d) {
+  if (!d) return '';
+  if (d.t === 'pct') return `−${d.v}%`;
+  if (d.t === 'price') return 'in offerta';
+  return d.t;
+}
+
 // ---------- rendering ----------
 function cartTotal() {
-  return state.cart.reduce((sum, it) => sum + it.price * it.qty, 0);
+  return state.cart.reduce((sum, it) => sum + lineTotal(it), 0);
 }
 
 function render() {
   syncList();
+  renderStores();
   renderCart();
   renderList();
   renderRecent();
@@ -81,47 +120,152 @@ function render() {
   renderHistory();
 }
 
+// ---------- one or two receipts ----------
+function receiptTotal(r) {
+  return state.cart.reduce((sum, it) => sum + ((it.r || 0) === r ? lineTotal(it) : 0), 0);
+}
+
+// Each receipt has its own voucher limit; the second one can only use the vouchers left in the wallet.
+function receiptsInfo() {
+  const s = state.settings;
+  if (!state.split) {
+    const total = cartTotal();
+    return [{ total, r: computeSplit(total, s) }];
+  }
+  const t0 = receiptTotal(0), t1 = receiptTotal(1);
+  const r0 = computeSplit(t0, s);
+  const r1 = computeSplit(t1, { ...s, wallet: Math.max(0, s.wallet - r0.used) });
+  return [{ total: t0, r: r0 }, { total: t1, r: r1 }];
+}
+
+// Best way to put the receipt lines on two receipts: fewest euro paid apart.
+// Subset sums over the line totals (cents), so it is exact and fast enough for a supermarket trip.
+function proposeSplit() {
+  const s = state.settings;
+  const lines = state.cart.map(lineTotal);
+  const T = lines.reduce((a, b) => a + b, 0);
+  if (lines.length < 2 || T <= 0 || T > 200000 || s.value <= 0) return null;
+  const from = new Int32Array(T + 1).fill(-1);
+  const reach = new Uint8Array(T + 1);
+  reach[0] = 1;
+  lines.forEach((w, i) => {
+    if (w <= 0) return;
+    for (let t = T; t >= w; t--) if (!reach[t] && reach[t - w]) { reach[t] = 1; from[t] = i; }
+  });
+  let best = null;
+  for (let t = 1; t < T; t++) {
+    if (!reach[t]) continue;
+    const a = computeSplit(t, s);
+    const b = computeSplit(T - t, { ...s, wallet: Math.max(0, s.wallet - a.used) });
+    const cash = a.cash + b.cash;
+    // fewer euro apart; then receipt 1 paid fully with vouchers; then receipt 1 fuller
+    if (!best || cash < best.cash || (cash === best.cash && (a.cash < best.cash0 || (a.cash === best.cash0 && t > best.t)))) {
+      best = { t, cash, cash0: a.cash, vouchers: a.used + b.used };
+    }
+  }
+  if (!best) return null;
+  const first = new Set();
+  for (let t = best.t; t > 0; t -= lines[from[t]]) first.add(from[t]);
+  best.first = first;
+  return best;
+}
+
+let limitLevel = null; // 0 fine, 1 close to the limit, 2 over: a change upward gives a haptic tap
+
 function renderSummary() {
   const total = cartTotal();
-  const r = computeSplit(total, state.settings);
+  const s = state.settings;
+  const recs = receiptsInfo();
+  const used = recs.reduce((a, x) => a + x.r.used, 0);
+  const cash = recs.reduce((a, x) => a + x.r.cash, 0);
+  const value = s.value;
+  const single = recs[0].r;
+  const isOver = (x) => x.total > x.r.limit;
+  const isNear = (x) => x.r.limit > 0 && x.total >= x.r.limit * 0.9 && x.total <= x.r.limit;
+  const over = recs.some(isOver);
+  // with two receipts a full receipt 1 is the goal, so only "over" colours the whole box
+  const near = !over && !state.split && recs.some(isNear);
 
   countTo($('total'), total);
-  $('vouchers-used').textContent = r.used;
-  $('vouchers-amount').textContent = euro(r.used * r.value);
-  countTo($('cash-due'), r.cash);
+  $('vouchers-used').textContent = used;
+  $('vouchers-amount').textContent = euro(used * value);
+  countTo($('cash-due'), cash);
   countTo($('l-total'), total);
-  $('l-vouchers').textContent = r.used;
-  countTo($('l-cash'), r.cash);
+  $('l-vouchers').textContent = used;
+  countTo($('l-cash'), cash);
 
-  [['summary', 'bar-fill', 'bar-ticks'], ['mini-summary', 'l-bar-fill', 'l-bar-ticks']].forEach(([box, fill, ticks]) => {
-    paintBar($(fill), $(ticks), total, r);
-    $(box).classList.toggle('over', total > r.limit);
-    $(box).classList.toggle('at-limit', r.limit > 0 && total >= r.limit * 0.9 && total <= r.limit);
+  // single receipt: one bar; two receipts: one small bar each
+  paintBar($('bar-fill'), $('bar-ticks'), total, single);
+  paintBar($('l-bar-fill'), $('l-bar-ticks'), state.split ? recs[0].total + recs[1].total : total,
+    state.split ? { ...single, limit: recs[0].r.limit + recs[1].r.limit, cap: 0 } : single);
+  ['summary', 'mini-summary'].forEach((box) => {
+    $(box).classList.toggle('over', over);
+    $(box).classList.toggle('at-limit', near);
   });
-
-  $('bar-caption').textContent = r.limit > 0
-    ? `${euro(total)} su ${euro(r.limit)} coperti dai buoni (${r.cap} × ${euro(r.value)})`
+  $('summary').classList.toggle('two', state.split);
+  $('bar-caption').textContent = single.limit > 0
+    ? `${euro(total)} su ${euro(single.limit)} coperti dai buoni (${single.cap} × ${euro(single.value)})`
     : 'Nessun buono disponibile';
 
+  renderReceipts(recs, isOver, isNear);
+
+  // too much for one receipt: offer two
+  let offer = null;
+  if (!state.split && total > single.limit && single.cap > 0) {
+    const p = proposeSplit();
+    if (p && p.cash < single.cash) offer = p;
+  }
+  $('split-offer').hidden = !offer;
+  if (offer) {
+    $('split-offer-text').innerHTML = `Con <strong>due scontrini</strong> usi ${offer.vouchers} buoni e paghi a parte <strong>${euro(offer.cash)}</strong> invece di ${euro(single.cash)}.`;
+    splitOffer = offer;
+  } else splitOffer = null;
+
   let hint;
-  const s = state.settings;
-  if (r.cap === 0) {
+  if (state.split) {
+    const [a, b] = recs;
+    if (b.total === 0) hint = 'Scontrino 2 vuoto: tocca un prodotto ↔ per spostarlo, oppure aggiungi qui sotto (va nello scontrino evidenziato).';
+    else if (over) hint = `Uno scontrino supera il limite dei buoni: sposta qualche prodotto con ↔. Buoni rimasti dopo lo scontrino 1: ${Math.max(0, s.wallet - a.r.used)}.`;
+    else hint = 'Alla cassa fai due scontrini: prima i prodotti dello scontrino 1, poi quelli del 2.';
+  } else if (single.cap === 0) {
     hint = s.wallet === 0
-      ? 'Hai finito i buoni. Aggiornali in Impostazioni quando arrivano quelli nuovi.'
+      ? 'Hai finito i buoni. Aggiornali in Opzioni quando arrivano quelli nuovi.'
       : 'Controlla le impostazioni dei buoni.';
   } else if (total === 0) {
-    hint = `Puoi spendere fino a ${euro(r.limit)} usando ${r.cap} buoni.`;
-  } else if (total > r.limit) {
+    hint = `Puoi spendere fino a ${euro(single.limit)} usando ${single.cap} buoni.`;
+  } else if (total > single.limit) {
     const why = s.wallet < s.maxPerTrip ? `ti restano solo ${s.wallet} buoni` : `il massimo è ${s.maxPerTrip} buoni per spesa`;
-    hint = `Hai superato il limite dei buoni di ${euro(total - r.limit)}: ${why}.`;
-  } else if (total === r.limit) {
+    hint = `Hai superato il limite dei buoni di ${euro(total - single.limit)}: ${why}.`;
+  } else if (total === single.limit) {
     hint = 'Perfetto: usi tutti i buoni possibili senza pagare nulla a parte.';
-  } else if (r.remainder === 0) {
-    hint = `Cifra esatta: ${r.used} buoni, niente da pagare a parte.`;
+  } else if (single.remainder === 0) {
+    hint = `Cifra esatta: ${single.used} buoni, niente da pagare a parte.`;
   } else {
-    hint = `Aggiungi ancora ${euro(r.toNext)} di spesa per sfruttare un altro buono intero.`;
+    hint = `Aggiungi ancora ${euro(single.toNext)} di spesa per sfruttare un altro buono intero.`;
   }
   $('hint').textContent = hint;
+
+  const level = over ? 2 : near ? 1 : 0;
+  if (limitLevel !== null && level > limitLevel) haptic(level === 2 ? 3 : 2);
+  limitLevel = level;
+}
+
+let splitOffer = null;
+
+function renderReceipts(recs, isOver, isNear) {
+  const wrap = $('receipts-wrap');
+  wrap.hidden = !state.split;
+  if (!state.split) return;
+  $('receipts').innerHTML = recs.map((x, i) => {
+    const pct = x.r.limit > 0 ? Math.min(100, (x.total / x.r.limit) * 100) : 100;
+    const cls = ['rcpt', state.addTo === i ? 'active' : '', isOver(x) ? 'over' : isNear(x) ? 'at-limit' : ''].join(' ');
+    return `<button type="button" class="${cls}" data-r="${i}" aria-pressed="${state.addTo === i}">
+      <span class="rcpt-head"><strong>Scontrino ${i + 1}</strong><span>${euro(x.total)}</span></span>
+      <span class="bar"><span class="bar-fill" style="width:${pct}%"></span></span>
+      <span class="rcpt-sub">${x.r.used} ${x.r.used === 1 ? 'buono' : 'buoni'} · ${euro(x.r.cash)} a parte</span>
+      <span class="rcpt-add">${state.addTo === i ? '✓ aggiungi qui' : 'tocca per aggiungere qui'}</span>
+    </button>`;
+  }).join('');
 }
 
 // Progress bar toward the voucher limit, with one notch per voucher.
@@ -162,31 +306,68 @@ function countTo(el, cents) {
 
 let lastAddedId = null; // the receipt line that just changed gets a short highlight
 
-function renderCart() {
-  const list = $('items');
-  list.innerHTML = '';
-  // newest first
-  [...state.cart].reverse().forEach((it) => {
-    const li = document.createElement('li');
-    li.className = 'item' + (it.id === lastAddedId ? ' enter' : '');
-    li.dataset.id = it.id;
-    li.innerHTML = `
-      <div class="item-main">
-        <span class="item-name">${it.name ? escapeHtml(it.name) : '<span class="muted">Prodotto</span>'}</span>
-        <button type="button" class="item-unit" data-act="price" aria-label="Cambia prezzo">${euro(it.price)}${it.qty > 1 ? ' cad.' : ''} <span class="pencil">✎</span></button>
-      </div>
-      <div class="item-qty">
+function cartLineHtml(it) {
+  const kg = byWeight(it);
+  const full = lineFull(it);
+  const tot = lineTotal(it);
+  const unit = kg
+    ? `${euro(it.price)}/kg`
+    : `${euro(it.price)}${it.qty > 1 ? ' cad.' : ''}`;
+  const deal = it.deal
+    ? `<button type="button" class="deal on" data-act="deal" aria-label="Cambia offerta">${escapeHtml(dealLabel(it.deal))}${full > tot ? ` · −${euro(full - tot)}` : ''}</button>`
+    : '<button type="button" class="deal" data-act="deal" aria-label="Aggiungi offerta">% offerta</button>';
+  const move = state.split
+    ? `<button type="button" class="move" data-act="move" aria-label="Sposta nell'altro scontrino">↔ ${(it.r || 0) === 0 ? 2 : 1}</button>`
+    : '';
+  const qty = kg
+    ? `<div class="item-qty"><button type="button" class="grams" data-act="grams" aria-label="Cambia peso">${gramsLabel(it.grams || 0)}</button></div>`
+    : `<div class="item-qty">
         <button data-act="dec" aria-label="Meno">−</button>
         <span>${it.qty}</span>
         <button data-act="inc" aria-label="Più">+</button>
+      </div>`;
+  return `
+      <div class="item-main">
+        <span class="item-name">${it.name ? escapeHtml(it.name) : '<span class="muted">Prodotto</span>'}</span>
+        <span class="item-tags">
+          <button type="button" class="item-unit" data-act="price" aria-label="Cambia prezzo">${unit} <span class="pencil">✎</span></button>
+          ${deal}${move}
+        </span>
       </div>
-      <span class="item-total">${euro(it.price * it.qty)}</span>
+      ${qty}
+      <span class="item-total">${full > tot ? `<s>${euro(full)}</s>` : ''}${euro(tot)}</span>
       <button class="item-del" data-act="del" aria-label="Elimina">✕</button>`;
-    list.appendChild(li);
+}
+
+function renderCart() {
+  const list = $('items');
+  list.innerHTML = '';
+  const groups = state.split ? [0, 1] : [null];
+  groups.forEach((g) => {
+    const rows = [...state.cart].reverse().filter((it) => g === null || (it.r || 0) === g); // newest first
+    if (g !== null) {
+      const h = document.createElement('li');
+      h.className = 'receipt-group';
+      h.innerHTML = `<span>Scontrino ${g + 1}</span><strong>${euro(receiptTotal(g))}</strong>`;
+      list.appendChild(h);
+      if (!rows.length) {
+        const e = document.createElement('li');
+        e.className = 'empty';
+        e.textContent = 'Nessun prodotto in questo scontrino.';
+        list.appendChild(e);
+      }
+    }
+    rows.forEach((it) => {
+      const li = document.createElement('li');
+      li.className = 'item' + (it.id === lastAddedId ? ' enter' : '') + (it.deal ? ' has-deal' : '');
+      li.dataset.id = it.id;
+      li.innerHTML = cartLineHtml(it);
+      list.appendChild(li);
+    });
   });
   const empty = state.cart.length === 0;
   $('empty').hidden = !empty;
-  $('receipt-title').hidden = empty;
+  $('receipt-title').hidden = empty || state.split;
   $('cart-actions').hidden = empty;
   lastAddedId = null;
 }
@@ -211,7 +392,7 @@ function renderHistory() {
         <span>${d.toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' })} · ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}</span>
         <strong>${euro(h.total)}</strong>
       </div>
-      <div class="trip-sub">${h.vouchers} buoni (${euro(h.vouchers * h.voucherValue)}) · ${euro(h.cash)} a parte · ${h.items.length} prodotti</div>
+      <div class="trip-sub">${h.store ? escapeHtml(h.store) + ' · ' : ''}${h.part ? `scontrino ${h.part} di 2 · ` : ''}${h.vouchers} buoni (${euro(h.vouchers * h.voucherValue)}) · ${euro(h.cash)} a parte · ${h.items.length} prodotti</div>
       <button class="ghost small danger" data-del="${h.id}">Elimina</button>`;
     list.appendChild(li);
   });
@@ -222,15 +403,41 @@ function renderHistory() {
 const catalogKey = (name, barcode) => barcode ? 'b:' + barcode : (name ? 'n:' + name.toLowerCase() : null);
 const MAX_PRICES = 30;
 
+const currentStore = () => {
+  const st = state.settings.store;
+  return st && (state.settings.stores || []).includes(st) ? st : '';
+};
+
+// A new price seen in the current store: it goes in the history, becomes the
+// store's price and also the "last known price" used in stores without one.
 function pushPrice(c, price, when) {
+  const store = currentStore();
   if (!Array.isArray(c.prices)) c.prices = c.price ? [{ p: c.price, d: c.used || when }] : [];
   const last = c.prices[c.prices.length - 1];
-  if (last && last.p === price) last.d = when;
-  else c.prices.push({ p: price, d: when });
+  if (last && last.p === price && (last.s || '') === store) last.d = when;
+  else c.prices.push(store ? { p: price, d: when, s: store } : { p: price, d: when });
   if (c.prices.length > MAX_PRICES) c.prices = c.prices.slice(-MAX_PRICES);
+  if (store) {
+    if (!c.storePrices || typeof c.storePrices !== 'object') c.storePrices = {};
+    c.storePrices[store] = { p: price, d: when };
+  }
 }
 
-function remember(name, price, barcode, meta) {
+// price to propose: the current store's own price, otherwise the last one seen anywhere
+function priceFor(c) {
+  const sp = storePrice(c);
+  return sp ? sp.p : c.price;
+}
+function storePrice(c) {
+  const st = currentStore();
+  const sp = st && c && c.storePrices && c.storePrices[st];
+  return sp && sp.p > 0 ? sp : null;
+}
+// "(ultimo prezzo visto)" when the current store has no price of its own yet
+const fallbackNote = (c) => currentStore() && !storePrice(c) ? ' (ultimo prezzo visto)' : '';
+const unitSuffix = (c) => c && c.unit === 'kg' ? '/kg' : '';
+
+function remember(name, price, barcode, meta, kg) {
   const key = catalogKey(name, barcode);
   if (!key) return;
   const now = Date.now();
@@ -238,6 +445,7 @@ function remember(name, price, barcode, meta) {
   const c = { ...prev, ...(meta || {}) };
   c.name = name || prev.name || '';
   c.barcode = barcode || null;
+  if (kg) c.unit = 'kg'; else delete c.unit;
   pushPrice(c, price, now);
   c.price = price;
   c.used = now;
@@ -263,7 +471,7 @@ function renderRecent() {
     b.type = 'button';
     b.className = 'chip';
     b.dataset.key = key;
-    b.innerHTML = `<span>${escapeHtml(productLabel(c))}</span><strong>${euro(c.price)}</strong>`;
+    b.innerHTML = `<span>${escapeHtml(productLabel(c))}</span><strong>${euro(priceFor(c))}${unitSuffix(c)}</strong>`;
     wrap.appendChild(b);
   });
   $('recent-wrap').hidden = entries.length === 0;
@@ -295,7 +503,7 @@ function renderCatalog() {
     used: (a, b) => (b[1].used || 0) - (a[1].used || 0),
     count: (a, b) => (b[1].count || 0) - (a[1].count || 0),
     name: (a, b) => productLabel(a[1]).localeCompare(productLabel(b[1]), 'it'),
-    price: (a, b) => a[1].price - b[1].price
+    price: (a, b) => priceFor(a[1]) - priceFor(b[1])
   }[sort] || (() => 0);
   rows = rows.sort(cmp);
 
@@ -313,7 +521,7 @@ function renderCatalog() {
         <span class="prod-name">${escapeHtml(productLabel(c))}</span>
         <span class="prod-sub">${sub || (c.barcode ? escapeHtml(c.barcode) : '&nbsp;')}</span>
       </div>
-      <span class="prod-price">${euro(c.price)}</span>
+      <span class="prod-price">${euro(priceFor(c))}${unitSuffix(c)}${storePrice(c) || !currentStore() ? '' : '<small>ultimo</small>'}</span>
       <button type="button" class="prod-add" data-add="${escapeHtml(key)}" aria-label="Aggiungi alla spesa">+</button>`;
     const im = li.querySelector('img');
     if (im) im.addEventListener('error', () => im.remove());
@@ -337,7 +545,7 @@ function renderCatalog() {
 // product on the virtual receipt at its remembered price, so the total updates.
 const listPrice = (l) => {
   const c = l.key && state.catalog[l.key];
-  return c && c.price > 0 ? c.price : null;
+  return c && priceFor(c) > 0 ? priceFor(c) : null;
 };
 
 function findListMatch(name, barcode) {
@@ -381,24 +589,26 @@ function syncList() {
   if (changed) save();
 }
 
-function tickItem(l, price) {
+const listByWeight = (l) => { const c = l.key && state.catalog[l.key]; return !!(c && c.unit === 'kg'); };
+
+function tickItem(l, price, grams) {
   const c = l.key ? state.catalog[l.key] : null;
   const name = c ? c.name : l.name;
   const barcode = c ? c.barcode : null;
-  const item = addToCart(name, price, l.qty, barcode, null, true);
+  const item = addToCart(name, price, grams ? 1 : l.qty, barcode, null, true, grams ? { grams } : null);
   l.done = true;
   l.cartId = item.id;
-  l.added = l.qty;
+  l.added = grams ? 1 : l.qty;
   l.key = catalogKey(name, barcode);
   save();
   render();
-  toast(`Preso: ${productLabel({ name, barcode })} · ${euro(price * l.qty)}`);
+  toast(`Preso: ${productLabel({ name, barcode })} · ${euro(grams ? perKg(price, grams) : price * l.qty)}`);
 }
 
 function untickItem(l) {
   const it = state.cart.find((x) => x.id === l.cartId);
   if (it) {
-    it.qty -= l.added || l.qty;
+    it.qty -= byWeight(it) ? it.qty : (l.added || l.qty);
     if (it.qty <= 0) state.cart = state.cart.filter((x) => x !== it);
   }
   l.done = false;
@@ -422,12 +632,15 @@ function renderList() {
     let sub;
     if (l.done) {
       const it = state.cart.find((x) => x.id === l.cartId);
-      sub = it
-        ? `<button type="button" class="item-unit" data-act="price" aria-label="Cambia prezzo">${l.added > 1 ? l.added + ' × ' : ''}${euro(it.price)} <span class="pencil">✎</span></button>`
-        : '';
+      sub = !it ? ''
+        : byWeight(it)
+          ? `<button type="button" class="item-unit" data-act="price" aria-label="Cambia prezzo al kg">${gramsLabel(it.grams)} × ${euro(it.price)}/kg = ${euro(lineTotal(it))} <span class="pencil">✎</span></button>`
+          : `<button type="button" class="item-unit" data-act="price" aria-label="Cambia prezzo">${l.added > 1 ? l.added + ' × ' : ''}${euro(it.price)} <span class="pencil">✎</span></button>`;
     } else {
       const p = listPrice(l);
-      sub = `<span class="li-sub">${p ? `${l.qty > 1 ? l.qty + ' × ' : ''}${euro(p)}` : 'Prezzo da scrivere quando lo prendi'}</span>`;
+      sub = listByWeight(l)
+        ? `<span class="li-sub">${p ? `${euro(p)}/kg · ` : ''}a peso: i grammi li scrivi quando lo prendi</span>`
+        : `<span class="li-sub">${p ? `${l.qty > 1 ? l.qty + ' × ' : ''}${euro(p)}` : 'Prezzo da scrivere quando lo prendi'}</span>`;
     }
     li.innerHTML = `
       <button type="button" class="tick" data-act="tick" aria-label="${l.done ? 'Togli la spunta' : 'Preso'}" aria-pressed="${l.done}">
@@ -453,7 +666,7 @@ function renderList() {
   $('list-actions').hidden = n === 0;
   $('list-clear-done').hidden = done.length === 0;
   $('list-title').textContent = todo.length ? `Da prendere (${todo.length})` : 'Hai preso tutto ✓';
-  const known = todo.filter((l) => listPrice(l));
+  const known = todo.filter((l) => listPrice(l) && !listByWeight(l));
   const est = known.reduce((a, l) => a + listPrice(l) * l.qty, 0);
   $('list-estimate').textContent = known.length
     ? `circa ${euro(est)}${known.length < todo.length ? ' (senza i prezzi mancanti)' : ''}`
@@ -483,7 +696,7 @@ function renderListOften() {
     b.type = 'button';
     b.className = 'chip';
     b.dataset.key = key;
-    b.innerHTML = `<span>${escapeHtml(productLabel(c))}</span><strong>${euro(c.price)}</strong>`;
+    b.innerHTML = `<span>${escapeHtml(productLabel(c))}</span><strong>${euro(priceFor(c))}${unitSuffix(c)}</strong>`;
     wrap.appendChild(b);
   });
   $('list-often-wrap').hidden = rows.length === 0;
@@ -504,23 +717,25 @@ function renderSuggest() {
       b.type = 'button';
       b.className = 'sug';
       b.dataset.key = key;
-      b.innerHTML = `<span>${escapeHtml(productLabel(c))}${c.brand ? ` <em>${escapeHtml(c.brand)}</em>` : ''}</span><strong>${euro(c.price)}</strong>`;
+      b.innerHTML = `<span>${escapeHtml(productLabel(c))}${c.brand ? ` <em>${escapeHtml(c.brand)}</em>` : ''}</span><strong>${euro(priceFor(c))}${unitSuffix(c)}</strong>`;
       box.appendChild(b);
     });
 }
 
 // Item with no known price: ask for it right in the list row.
-function askListPrice(l, li, onPrice) {
+// opts.grams asks the weight instead, opts.perKg says the price is per kg
+function askListPrice(l, li, onPrice, opts) {
+  const o = opts || {};
   const main = li.querySelector('.li-main');
-  const old = main.querySelector('.li-sub, .item-unit');
+  const old = main.querySelector('.li-sub, .item-unit, .unit-input');
   const input = document.createElement('input');
   input.type = 'text';
-  input.inputMode = 'decimal';
+  input.inputMode = o.grams ? 'numeric' : 'decimal';
   input.enterKeyHint = 'done';
   input.className = 'unit-input';
-  input.placeholder = 'Prezzo €';
-  input.setAttribute('aria-label', 'Prezzo');
-  const cur = state.cart.find((x) => x.id === l.cartId);
+  input.placeholder = o.grams ? 'Grammi' : o.perKg ? 'Prezzo €/kg' : 'Prezzo €';
+  input.setAttribute('aria-label', o.grams ? 'Grammi' : 'Prezzo');
+  const cur = !o.grams && state.cart.find((x) => x.id === l.cartId);
   if (cur) input.value = fmtPriceInput(cur.price);
   if (old) old.replaceWith(input); else main.appendChild(input);
   input.focus();
@@ -529,7 +744,7 @@ function askListPrice(l, li, onPrice) {
   const commit = (keep) => {
     if (finished) return;
     finished = true;
-    const price = parseEuro(input.value);
+    const price = o.grams ? parseGrams(input.value) : parseEuro(input.value);
     if (keep && Number.isFinite(price) && price > 0) onPrice(price);
     else render();
   };
@@ -573,6 +788,10 @@ $('shop-list').addEventListener('click', (e) => {
   if (act === 'tick') {
     if (l.done) return untickItem(l);
     const p = listPrice(l);
+    if (listByWeight(l)) {
+      const askGrams = (price) => askListPrice(l, li, (g) => tickItem(l, price, g), { grams: true });
+      return p ? askGrams(p) : askListPrice(l, li, askGrams, { perKg: true });
+    }
     if (p) return tickItem(l, p);
     return askListPrice(l, li, (price) => tickItem(l, price));
   }
@@ -649,12 +868,40 @@ async function lookupProduct(code) {
   }
 }
 
-function addToCart(name, price, qty, barcode, meta, fromList) {
-  let item = state.cart.find((x) => x.price === price && x.name === name && (x.barcode || null) === (barcode || null));
+// A saved product goes on the receipt at the current store's price.
+// Products sold by weight need the grams first: the add form is filled in and waits for them.
+function addProduct(c) {
+  if (c.unit === 'kg') { prefillWeight(c); return null; }
+  return addToCart(c.name, priceFor(c), 1, c.barcode);
+}
+
+function prefillWeight(c) {
+  showView('spesa');
+  $('item-name').value = c.name || '';
+  $('item-price').value = fmtPriceInput(priceFor(c));
+  pendingBarcode = c.barcode || null;
+  pendingMeta = null;
+  $('barcode-note').hidden = true;
+  setUnitMode('kg');
+  $('item-grams').value = '';
+  $('item-grams').focus();
+  toast(`${productLabel(c)}: ${euro(priceFor(c))}/kg${fallbackNote(c)} · scrivi i grammi`);
+}
+
+// opts.grams: product sold by weight, price is per kg
+function addToCart(name, price, qty, barcode, meta, fromList, opts) {
+  const grams = opts && opts.grams > 0 ? Math.round(opts.grams) : 0;
+  const r = state.split ? state.addTo : 0;
+  let item = grams ? null : state.cart.find((x) => !byWeight(x) && (x.r || 0) === r && x.price === price && x.name === name && (x.barcode || null) === (barcode || null));
   if (item) item.qty += qty;
-  else state.cart.push(item = { id: uid(), name, price, qty, barcode: barcode || null });
+  else {
+    item = { id: uid(), name, price, qty: grams ? 1 : qty, barcode: barcode || null };
+    if (grams) { item.kg = true; item.grams = grams; }
+    if (state.split) item.r = r;
+    state.cart.push(item);
+  }
   lastAddedId = item.id;
-  remember(name, price, barcode, meta);
+  remember(name, price, barcode, meta, !!grams);
   // bought something that is on the shopping list (scan, chip, manual): tick it off
   if (!fromList) {
     const li = findListMatch(name, barcode);
@@ -669,16 +916,32 @@ function addToCart(name, price, qty, barcode, meta, fromList) {
 // The product database learns the new price and keeps the old one in its history.
 function startPriceEdit(id) {
   const it = state.cart.find((x) => x.id === id);
+  if (!it) return;
+  inlineEdit(id, '.item-unit', fmtPriceInput(it.price), 'decimal', byWeight(it) ? 'Nuovo prezzo al kg' : 'Nuovo prezzo',
+    (v) => setCartPrice(it, parseEuro(v)));
+}
+
+// weight of a line sold by weight
+function startGramsEdit(id) {
+  const it = state.cart.find((x) => x.id === id);
+  if (!it) return;
+  inlineEdit(id, '.grams', String(it.grams || ''), 'numeric', 'Grammi', (v) => {
+    const g = parseGrams(v);
+    if (g > 0 && g !== it.grams) { it.grams = g; lastAddedId = it.id; save(); }
+  });
+}
+
+function inlineEdit(id, selector, value, mode, label, apply) {
   const li = document.querySelector(`.item[data-id="${id}"]`);
-  if (!it || !li) return;
-  const btn = li.querySelector('.item-unit');
+  const btn = li && li.querySelector(selector);
+  if (!btn) return;
   const input = document.createElement('input');
   input.type = 'text';
-  input.inputMode = 'decimal';
+  input.inputMode = mode;
   input.enterKeyHint = 'done';
   input.className = 'unit-input';
-  input.value = fmtPriceInput(it.price);
-  input.setAttribute('aria-label', 'Nuovo prezzo');
+  input.value = value;
+  input.setAttribute('aria-label', label);
   btn.replaceWith(input);
   li.scrollIntoView({ block: 'center', behavior: 'smooth' });
   input.focus();
@@ -687,8 +950,7 @@ function startPriceEdit(id) {
   const commit = (keep) => {
     if (done) return;
     done = true;
-    const price = parseEuro(input.value);
-    if (keep) setCartPrice(it, price);
+    if (keep) apply(input.value);
     render();
   };
   input.addEventListener('keydown', (e) => {
@@ -698,11 +960,21 @@ function startPriceEdit(id) {
   input.addEventListener('blur', () => commit(true));
 }
 
+// "450", "450 g", "0,45 kg", "1,2kg" -> grams
+function parseGrams(str) {
+  const t = String(str || '').trim().toLowerCase().replace(',', '.').replace(/\s/g, '');
+  const m = t.match(/^(\d*\.?\d+)(g|gr|kg)?$/);
+  if (!m) return NaN;
+  const n = parseFloat(m[1]);
+  return Math.round(m[2] === 'kg' ? n * 1000 : n);
+}
+
 function setCartPrice(it, price) {
   if (!Number.isFinite(price) || price <= 0 || price === it.price) return;
   it.price = price;
   updateCatalogPrice(it.name, it.barcode, price);
-  const twin = state.cart.find((x) => x !== it && x.price === price && x.name === it.name && (x.barcode || null) === (it.barcode || null));
+  const twin = !byWeight(it) && state.cart.find((x) => x !== it && !byWeight(x) && (x.r || 0) === (it.r || 0) && !x.deal === !it.deal &&
+    x.price === price && x.name === it.name && (x.barcode || null) === (it.barcode || null));
   if (twin) {
     twin.qty += it.qty;
     state.cart = state.cart.filter((x) => x !== it);
@@ -710,7 +982,7 @@ function setCartPrice(it, price) {
   }
   lastAddedId = twin ? twin.id : it.id;
   save();
-  toast(`Prezzo aggiornato: ${euro(price)}`);
+  toast(`Prezzo aggiornato: ${euro(price)}${byWeight(it) ? '/kg' : ''}${currentStore() ? ' da ' + currentStore() : ''}`);
 }
 
 function updateCatalogPrice(name, barcode, price) {
@@ -728,6 +1000,7 @@ function renderSettings() {
   $('s-wallet').value = s.wallet;
   $('s-monthly').value = s.monthly;
   $('s-online').checked = s.online !== false;
+  $('s-haptics').checked = s.haptics !== false;
 }
 
 // ---------- events ----------
@@ -745,7 +1018,7 @@ function applyTheme() {
   const root = document.documentElement;
   if (t === 'light' || t === 'dark') root.dataset.theme = t; else delete root.dataset.theme;
   const dark = t === 'dark' || (t !== 'light' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#111513' : '#f4f5f2');
+  document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#131118' : '#f6f4f9');
   document.querySelectorAll('#theme-picker button').forEach((b) => {
     const on = b.dataset.theme === (t || 'auto');
     b.classList.toggle('active', on);
@@ -781,25 +1054,39 @@ $('add-form').addEventListener('submit', (e) => {
     return;
   }
   $('item-price').classList.remove('invalid');
-  addToCart($('item-name').value.trim(), price, qty, pendingBarcode, pendingMeta);
+  let grams = 0;
+  if (unitMode === 'kg') {
+    grams = parseGrams($('item-grams').value);
+    if (!(grams > 0)) {
+      $('item-grams').classList.add('invalid');
+      $('item-grams').focus();
+      return;
+    }
+  }
+  addToCart($('item-name').value.trim(), price, qty, pendingBarcode, pendingMeta, false, grams ? { grams } : null);
   clearPendingBarcode();
   $('item-name').value = '';
   $('item-price').value = '';
   $('item-qty').value = 1;
+  $('item-grams').value = '';
+  setUnitMode('pz');
   $('item-price').focus();
 });
 
 // typing a known product name fills in its last price
 $('item-name').addEventListener('change', () => {
   const c = findByName($('item-name').value.trim());
-  if (c && !$('item-price').value) $('item-price').value = (c.price / 100).toFixed(2).replace('.', ',');
+  if (c && !$('item-price').value) {
+    $('item-price').value = fmtPriceInput(priceFor(c));
+    setUnitMode(c.unit === 'kg' ? 'kg' : 'pz');
+  }
 });
 
 $('recent').addEventListener('click', (e) => {
   const b = e.target.closest('.chip');
   if (!b) return;
   const c = state.catalog[b.dataset.key];
-  if (c) addToCart(c.name, c.price, 1, c.barcode);
+  if (c) addProduct(c);
 });
 
 $('clear-catalog').addEventListener('click', () => {
@@ -885,13 +1172,13 @@ function closeScanner() {
 
 function onBarcode(code) {
   if (!scanStop) return; // already handled
-  if (navigator.vibrate) navigator.vibrate(60);
+  haptic(1);
   closeScanner();
   if (scanMode === 'catalog') return openEditor('b:' + code, code);
   const known = state.catalog['b:' + code];
   if (known) {
-    const item = addToCart(known.name, known.price, 1, code);
-    toast(`${productLabel(known)}: ${euro(known.price)} · tocca per cambiare prezzo`, () => startPriceEdit(item.id));
+    const item = addProduct(known);
+    if (item) toast(`${productLabel(known)}: ${euro(item.price)}${fallbackNote(known)} · tocca per cambiare prezzo`, () => startPriceEdit(item.id));
     if (!known.name) enrich(code);
     return;
   }
@@ -948,7 +1235,9 @@ function openEditor(key, barcode) {
   $('pd-name').value = c ? c.name || '' : '';
   $('pd-brand').value = c ? c.brand || '' : '';
   $('pd-barcode').value = code;
-  $('pd-price').value = c ? fmtPriceInput(c.price) : '';
+  $('pd-price').value = c ? fmtPriceInput(priceFor(c)) : '';
+  $('pd-kg').checked = !!(c && c.unit === 'kg');
+  paintEditorPriceLabel(c);
   $('pd-price').classList.remove('invalid');
   $('pd-code').textContent = c && c.count ? `Comprato ${c.count} ${c.count === 1 ? 'volta' : 'volte'}` : '';
   $('pd-delete').hidden = !c;
@@ -983,14 +1272,33 @@ function setEditorImage(url) {
   if (u) { img.src = u; img.onerror = () => { img.hidden = true; }; } else img.removeAttribute('src');
 }
 
+function paintEditorPriceLabel(c) {
+  const st = currentStore();
+  const kg = $('pd-kg').checked;
+  $('pd-price-label').textContent = (kg ? 'Prezzo €/kg' : 'Prezzo €') + (st ? ` da ${st}` : '');
+  $('pd-price-note').hidden = !(c && st && !storePrice(c));
+  $('pd-price-note').textContent = `Non hai ancora un prezzo di ${st}: qui c'è l'ultimo visto. Salvando diventa il prezzo di ${st}.`;
+}
+$('pd-kg').addEventListener('change', () => paintEditorPriceLabel(editKey ? state.catalog[editKey] : null));
+
 function renderPriceHistory(c) {
   const box = $('pd-history');
   const ps = c && Array.isArray(c.prices) ? c.prices : [];
-  if (ps.length < 2) { box.innerHTML = ''; return; }
+  const sp = c && c.storePrices ? Object.entries(c.storePrices).filter(([, x]) => x && x.p > 0) : [];
   const day = (d) => new Date(d).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' });
-  box.innerHTML = '<span class="muted small-text">Prezzi visti</span><div class="ph-list">' +
-    [...ps].reverse().slice(0, 8).map((x) => `<span><strong>${euro(x.p)}</strong> ${day(x.d)}</span>`).join('') +
-    '</div>';
+  const u = unitSuffix(c);
+  let html = '';
+  if (sp.length) {
+    html += '<span class="muted small-text">Prezzi per negozio</span><div class="ph-list stores">' +
+      sp.sort((a, b) => a[1].p - b[1].p).map(([st, x]) => `<span class="${st === currentStore() ? 'here' : ''}">${escapeHtml(st)} <strong>${euro(x.p)}${u}</strong> ${day(x.d)}</span>`).join('') +
+      '</div>';
+  }
+  if (ps.length >= 2) {
+    html += '<span class="muted small-text">Prezzi visti</span><div class="ph-list">' +
+      [...ps].reverse().slice(0, 8).map((x) => `<span><strong>${euro(x.p)}${u}</strong> ${day(x.d)}${x.s ? ' · ' + escapeHtml(x.s) : ''}</span>`).join('') +
+      '</div>';
+  }
+  box.innerHTML = html;
 }
 
 $('prod-form').addEventListener('submit', (e) => {
@@ -1031,8 +1339,10 @@ $('prod-form').addEventListener('submit', (e) => {
     c.count = (prev.count || 0) + (other.count || 0);
     c.prices = [...(other.prices || []), ...(prev.prices || [])].sort((a, b) => a.d - b.d).slice(-MAX_PRICES);
   }
-  if (c.price !== price) pushPrice(c, price, now);
+  const proposed = prev || other ? priceFor(c) : null;
+  if (proposed !== price || (currentStore() && !storePrice(c))) pushPrice(c, price, now);
   c.price = price;
+  if ($('pd-kg').checked) c.unit = 'kg'; else delete c.unit;
   c.count = c.count || 0;
   c.used = c.used || now;
   if (editKey && editKey !== key) delete state.catalog[editKey];
@@ -1040,8 +1350,7 @@ $('prod-form').addEventListener('submit', (e) => {
   save();
   dialog.close();
   if (action === 'cart') {
-    addToCart(c.name, c.price, 1, c.barcode);
-    toast(`${productLabel(c)} aggiunto: ${euro(c.price)}`);
+    if (addProduct(c)) toast(`${productLabel(c)} aggiunto: ${euro(c.price)}`);
   } else if (action === 'list') {
     addToList('', key);
     toast(`${productLabel(c)} aggiunto alla lista`);
@@ -1077,8 +1386,9 @@ $('catalog').addEventListener('click', (e) => {
   if (add) {
     const c = state.catalog[add.dataset.add];
     if (!c) return;
-    addToCart(c.name, c.price, 1, c.barcode);
-    toast(`${productLabel(c)} aggiunto: ${euro(c.price)}`);
+    const item = addProduct(c);
+    if (!item) return;
+    toast(`${productLabel(c)} aggiunto: ${euro(item.price)}${fallbackNote(c)}`);
     add.classList.add('done');
     setTimeout(() => add.classList.remove('done'), 600);
     return;
@@ -1139,8 +1449,15 @@ function importCatalog(cat) {
     const key = catalogKey(name, barcode);
     if (!key || !Number.isFinite(price) || price <= 0) return;
     const prices = Array.isArray(x.prices)
-      ? x.prices.filter((p) => p && Number.isFinite(p.p) && Number.isFinite(p.d)).map((p) => ({ p: Math.round(p.p), d: p.d }))
+      ? x.prices.filter((p) => p && Number.isFinite(p.p) && Number.isFinite(p.d))
+        .map((p) => (typeof p.s === 'string' && p.s ? { p: Math.round(p.p), d: p.d, s: p.s.slice(0, 40) } : { p: Math.round(p.p), d: p.d }))
       : [];
+    const storePrices = {};
+    if (x.storePrices && typeof x.storePrices === 'object') {
+      Object.entries(x.storePrices).forEach(([st, v]) => {
+        if (st && v && Number.isFinite(v.p) && v.p > 0) storePrices[st.slice(0, 40)] = { p: Math.round(v.p), d: Number.isFinite(v.d) ? v.d : Date.now() };
+      });
+    }
     const inc = {
       name, barcode, price,
       brand: typeof x.brand === 'string' ? x.brand.slice(0, 80) : '',
@@ -1148,8 +1465,10 @@ function importCatalog(cat) {
       image: safeImg(x.image),
       prices,
       used: Number.isFinite(x.used) ? x.used : Date.now(),
-      count: Number.isFinite(x.count) ? x.count : 0
+      count: Number.isFinite(x.count) ? x.count : 0,
+      storePrices
     };
+    if (x.unit === 'kg') inc.unit = 'kg';
     const cur = state.catalog[key];
     if (cur) {
       const newer = (inc.used || 0) > (cur.used || 0) ? inc : cur;
@@ -1158,7 +1477,9 @@ function importCatalog(cat) {
         .sort((a, b) => a.d - b.d)
         .filter((p) => { const k = p.p + ':' + p.d; if (seen.has(k)) return false; seen.add(k); return true; })
         .slice(-MAX_PRICES);
-      state.catalog[key] = { ...cur, ...inc, ...newer, brand: newer.brand || cur.brand || inc.brand, image: newer.image || cur.image || inc.image, prices: merged, count: Math.max(cur.count || 0, inc.count) };
+      const sp = { ...(cur.storePrices || {}) };
+      Object.entries(storePrices).forEach(([st, v]) => { if (!sp[st] || (sp[st].d || 0) < v.d) sp[st] = v; });
+      state.catalog[key] = { ...cur, ...inc, ...newer, brand: newer.brand || cur.brand || inc.brand, image: newer.image || cur.image || inc.image, prices: merged, count: Math.max(cur.count || 0, inc.count), storePrices: sp };
     } else {
       state.catalog[key] = inc;
     }
@@ -1177,6 +1498,15 @@ $('items').addEventListener('click', (e) => {
   const it = state.cart.find((x) => x.id === id);
   if (!it) return;
   if (btn.dataset.act === 'price') return startPriceEdit(id);
+  if (btn.dataset.act === 'grams') return startGramsEdit(id);
+  if (btn.dataset.act === 'deal') return openDeal(it);
+  if (btn.dataset.act === 'move') {
+    it.r = (it.r || 0) === 0 ? 1 : 0;
+    lastAddedId = it.id;
+    save();
+    render();
+    return toast(`Spostato nello scontrino ${it.r + 1}`);
+  }
   if (btn.dataset.act === 'inc') it.qty++;
   if (btn.dataset.act === 'dec') {
     if (it.qty > 1) it.qty--;
@@ -1193,28 +1523,42 @@ $('items').addEventListener('click', (e) => {
 $('clear-trip').addEventListener('click', () => {
   if (!confirm('Svuotare la spesa in corso?')) return;
   state.cart = [];
+  state.split = false;
+  state.addTo = 0;
   save();
   render();
 });
 
 $('close-trip').addEventListener('click', () => {
-  const total = cartTotal();
-  const r = computeSplit(total, state.settings);
+  const recs = receiptsInfo();
   const ticked = state.list.filter((l) => l.done).length;
-  const msg = `Concludere la spesa?\n\nTotale ${euro(total)}\nBuoni: ${r.used} (${euro(r.used * r.value)})\nA parte: ${euro(r.cash)}` +
+  const two = state.split && recs.every((x) => x.total > 0);
+  const lines = recs.map((x, i) => (state.split ? `Scontrino ${i + 1}: ` : 'Totale ') +
+    `${euro(x.total)}\nBuoni: ${x.r.used} (${euro(x.r.used * x.r.value)}) · a parte: ${euro(x.r.cash)}`);
+  const msg = `Concludere la spesa?\n\n${lines.join('\n\n')}` +
     (ticked ? `\n\nI ${ticked} prodotti spuntati escono dalla lista.` : '');
   if (!confirm(msg)) return;
-  state.history.push({
-    id: uid(),
-    date: new Date().toISOString(),
-    total,
-    vouchers: r.used,
-    voucherValue: r.value,
-    cash: r.cash,
-    items: state.cart
+  const date = new Date().toISOString();
+  const store = currentStore();
+  recs.forEach((x, i) => {
+    if (state.split && x.total === 0) return;
+    const entry = {
+      id: uid(),
+      date,
+      total: x.total,
+      vouchers: x.r.used,
+      voucherValue: x.r.value,
+      cash: x.r.cash,
+      items: state.cart.filter((it) => !state.split || (it.r || 0) === i)
+    };
+    if (store) entry.store = store;
+    if (two) entry.part = i + 1;
+    state.history.push(entry);
+    state.settings.wallet = Math.max(0, state.settings.wallet - x.r.used);
   });
-  state.settings.wallet = Math.max(0, state.settings.wallet - r.used);
   state.cart = [];
+  state.split = false;
+  state.addTo = 0;
   state.list = state.list.filter((l) => !l.done); // what was not found stays for next time
   save();
   render();
@@ -1279,6 +1623,234 @@ function flashSaved() {
   flashSaved.t = setTimeout(() => { el.hidden = true; }, 1500);
 }
 
+// ---------- two receipts ----------
+$('split-do').addEventListener('click', () => {
+  const p = splitOffer || proposeSplit();
+  if (!p) return;
+  state.cart.forEach((it, i) => { it.r = p.first.has(i) ? 0 : 1; });
+  state.split = true;
+  state.addTo = 1; // the first receipt is the full one: new products go on the second
+  save();
+  render();
+  toast('Diviso in due scontrini');
+});
+$('split-manual').addEventListener('click', () => {
+  state.cart.forEach((it) => { it.r = 0; });
+  state.split = true;
+  state.addTo = 1;
+  save();
+  render();
+});
+$('receipts').addEventListener('click', (e) => {
+  const b = e.target.closest('.rcpt');
+  if (!b) return;
+  state.addTo = b.dataset.r === '1' ? 1 : 0;
+  save();
+  render();
+});
+$('split-undo').addEventListener('click', () => {
+  state.split = false;
+  state.addTo = 0;
+  state.cart.forEach((it) => { delete it.r; });
+  // the same product on both receipts becomes one line again
+  const merged = [];
+  state.cart.forEach((it) => {
+    const twin = !byWeight(it) && merged.find((x) => !byWeight(x) && x.price === it.price && x.name === it.name &&
+      (x.barcode || null) === (it.barcode || null) && JSON.stringify(x.deal || null) === JSON.stringify(it.deal || null));
+    if (twin) {
+      twin.qty += it.qty;
+      state.list.forEach((l) => { if (l.cartId === it.id) l.cartId = twin.id; });
+    } else merged.push(it);
+  });
+  state.cart = merged;
+  save();
+  render();
+});
+
+// ---------- offers ----------
+let dealItem = null;
+let dealType = '';
+
+function openDeal(it) {
+  dealItem = it;
+  dealType = it.deal ? it.deal.t : '';
+  $('deal-title').textContent = it.name || 'Prodotto';
+  const kg = byWeight(it);
+  $('deal-types').querySelectorAll('[data-deal="2x1"], [data-deal="3x2"]').forEach((b) => { b.hidden = kg; });
+  $('deal-value').value = it.deal && it.deal.t === 'pct' ? String(it.deal.v)
+    : it.deal && it.deal.t === 'price' ? fmtPriceInput(it.deal.v) : '';
+  paintDeal();
+  $('deal-dialog').showModal();
+}
+
+function readDeal() {
+  if (!dealType) return null;
+  if (dealType === '2x1' || dealType === '3x2') return { t: dealType };
+  const raw = $('deal-value').value;
+  if (dealType === 'pct') {
+    const v = parseFloat(String(raw).replace(',', '.').replace('%', ''));
+    return v > 0 && v < 100 ? { t: 'pct', v: Math.round(v * 10) / 10 } : undefined;
+  }
+  const v = parseEuro(raw);
+  return v > 0 && v < dealItem.price ? { t: 'price', v } : undefined;
+}
+
+function paintDeal() {
+  $('deal-types').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.deal === dealType));
+  const needsValue = dealType === 'pct' || dealType === 'price';
+  $('deal-value-field').hidden = !needsValue;
+  $('deal-value-label').textContent = dealType === 'pct' ? 'Sconto %' : byWeight(dealItem) ? 'Prezzo scontato al kg €' : 'Prezzo scontato €';
+  $('deal-value').placeholder = dealType === 'pct' ? 'Es. 30' : 'Es. ' + fmtPriceInput(Math.round(dealItem.price * 0.7));
+  const d = readDeal();
+  const it = dealItem;
+  let txt = '';
+  if (d === undefined) txt = dealType === 'price' ? `Scrivi un prezzo più basso di ${euro(it.price)}.` : 'Scrivi lo sconto (da 1 a 99).';
+  else {
+    const probe = { ...it, deal: d };
+    const full = lineFull(probe), tot = lineTotal(probe);
+    txt = d ? `${euro(full)} → <strong>${euro(tot)}</strong>${full > tot ? ` · risparmi ${euro(full - tot)}` : ''}` : `Prezzo pieno: ${euro(full)}`;
+    if (d && (d.t === '2x1' || d.t === '3x2') && !byWeight(it)) {
+      const n = d.t === '2x1' ? 2 : 3;
+      if (it.qty < n) txt += `<br>Con ${it.qty} pezzo non c'è sconto: ne servono ${n}.`;
+    }
+  }
+  $('deal-preview').innerHTML = txt;
+}
+
+$('deal-types').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-deal]');
+  if (!b) return;
+  dealType = b.dataset.deal;
+  paintDeal();
+  if (dealType === 'pct' || dealType === 'price') $('deal-value').focus();
+});
+$('deal-value').addEventListener('input', paintDeal);
+$('deal-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const action = e.submitter ? e.submitter.value : 'save';
+  if (action !== 'save') return $('deal-dialog').close();
+  const d = readDeal();
+  if (d === undefined) { $('deal-value').classList.add('invalid'); $('deal-value').focus(); return; }
+  $('deal-value').classList.remove('invalid');
+  if (d) dealItem.deal = d; else delete dealItem.deal;
+  lastAddedId = dealItem.id;
+  $('deal-dialog').close();
+  save();
+  render();
+});
+
+// ---------- weight ----------
+let unitMode = 'pz';
+function setUnitMode(m) {
+  unitMode = m === 'kg' ? 'kg' : 'pz';
+  document.querySelectorAll('#unit-toggle button').forEach((b) => {
+    const on = b.dataset.unit === unitMode;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-checked', on);
+  });
+  $('price-label').textContent = unitMode === 'kg' ? 'Prezzo €/kg' : 'Prezzo €';
+  $('qty-field').hidden = unitMode === 'kg';
+  $('grams-field').hidden = unitMode !== 'kg';
+  paintWeightCalc();
+}
+function paintWeightCalc() {
+  const el = $('weight-calc');
+  const p = parseEuro($('item-price').value);
+  const g = parseGrams($('item-grams').value);
+  const show = unitMode === 'kg' && p > 0 && g > 0;
+  el.hidden = !show;
+  if (show) el.textContent = `${gramsLabel(g)} × ${euro(p)}/kg = ${euro(perKg(p, g))}`;
+}
+$('unit-toggle').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-unit]');
+  if (!b) return;
+  setUnitMode(b.dataset.unit);
+  if (unitMode === 'kg' && $('item-price').value) $('item-grams').focus();
+});
+$('item-grams').addEventListener('input', (e) => { e.target.classList.remove('invalid'); paintWeightCalc(); });
+$('item-price').addEventListener('input', paintWeightCalc);
+
+// ---------- stores ----------
+function renderStores() {
+  const s = state.settings;
+  const stores = s.stores || [];
+  const sel = $('store-select');
+  sel.innerHTML = '<option value="">Nessun negozio</option>' +
+    stores.map((x) => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('') +
+    '<option value="__edit">Modifica negozi…</option>';
+  sel.value = currentStore();
+  $('store-list').innerHTML = stores.map((x) =>
+    `<span class="store-chip">${escapeHtml(x)}<button type="button" data-del-store="${escapeHtml(x)}" aria-label="Togli ${escapeHtml(x)}">✕</button></span>`).join('') ||
+    '<span class="muted small-text">Nessun negozio.</span>';
+}
+$('store-select').addEventListener('change', (e) => {
+  if (e.target.value === '__edit') {
+    e.target.value = currentStore();
+    showView('impostazioni');
+    $('store-new').focus();
+    return;
+  }
+  state.settings.store = e.target.value;
+  save();
+  render();
+  if (state.settings.store) toast(`Prezzi di ${state.settings.store}`);
+});
+$('store-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const name = $('store-new').value.trim().slice(0, 40);
+  if (!name) return;
+  const stores = state.settings.stores || (state.settings.stores = []);
+  if (!stores.some((x) => x.toLowerCase() === name.toLowerCase())) stores.push(name);
+  $('store-new').value = '';
+  save();
+  render();
+});
+$('store-list').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-del-store]');
+  if (!b) return;
+  const name = b.dataset.delStore;
+  if (!confirm(`Togliere ${name} dall'elenco? I prezzi già salvati restano nei prodotti.`)) return;
+  state.settings.stores = (state.settings.stores || []).filter((x) => x !== name);
+  if (state.settings.store === name) state.settings.store = '';
+  save();
+  render();
+});
+
+// ---------- haptic feedback ----------
+// navigator.vibrate where it exists (Android). Safari on iPhone has no vibration API:
+// from iOS 18 toggling an <input switch> gives a light system tap, which works only
+// while handling a touch. Elsewhere it silently does nothing.
+const haptic = (() => {
+  let label = null;
+  const el = () => {
+    if (label) return label;
+    label = document.createElement('label');
+    label.className = 'haptic';
+    label.setAttribute('aria-hidden', 'true');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.setAttribute('switch', '');
+    input.tabIndex = -1;
+    label.appendChild(input);
+    document.body.appendChild(label);
+    return label;
+  };
+  return (pulses = 1) => {
+    if (state.settings.haptics === false) return;
+    try {
+      if (navigator.vibrate) { navigator.vibrate(pulses === 1 ? 40 : Array.from({ length: pulses * 2 - 1 }, (_, i) => (i % 2 ? 70 : 45))); return; }
+      const l = el();
+      l.click(); // first tap right away, while the touch still counts
+      for (let k = 1; k < pulses; k++) setTimeout(() => l.click(), k * 120);
+    } catch (e) { /* no haptics here */ }
+  };
+})();
+$('s-haptics').addEventListener('change', (e) => {
+  state.settings.haptics = e.target.checked;
+  save();
+  if (e.target.checked) haptic(1);
+});
+
 applyTheme();
 render();
 
@@ -1299,7 +1871,7 @@ if ('serviceWorker' in navigator) {
   let pendingReload = false;
   const busy = () => {
     const a = document.activeElement;
-    return (a && (a.tagName === 'INPUT' || a.tagName === 'SELECT')) || $('prod-dialog').open || !$('scanner').hidden;
+    return (a && (a.tagName === 'INPUT' || a.tagName === 'SELECT')) || $('prod-dialog').open || $('deal-dialog').open || !$('scanner').hidden;
   };
   const reloadNow = () => {
     try { sessionStorage.setItem('cf-updated', '1'); } catch (e) { /* ignore */ }

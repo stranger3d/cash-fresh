@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Cash Fresh</title>
   <meta name="description" content="Conta la spesa e controlla i buoni pasto.">
-  <meta name="theme-color" content="#0f7b5f">
+  <meta name="theme-color" content="#f6f4f9">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -34,6 +34,13 @@
   <main>
     <!-- SPESA -->
     <section id="view-spesa" class="view active">
+      <label class="store-row">
+        <span class="store-pin" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M4 4h16l1 5a3 3 0 0 1-2 2.8V20H5v-8.2A3 3 0 0 1 3 9zm3 9v5h4v-5zm6 0v5h4v-5z"/></svg>
+        </span>
+        <span class="store-label">Negozio</span>
+        <select id="store-select" aria-label="Negozio in cui sei"></select>
+      </label>
       <div class="card summary" id="summary">
         <div class="total-row">
           <span class="label">Totale spesa</span>
@@ -53,7 +60,16 @@
             <span class="split-sub">contanti o carta</span>
           </div>
         </div>
+        <div id="receipts-wrap" hidden>
+          <div class="receipts" id="receipts"></div>
+          <button type="button" class="ghost small" id="split-undo">Unisci in un solo scontrino</button>
+        </div>
         <p class="hint" id="hint"></p>
+        <div class="split-offer" id="split-offer" hidden>
+          <p id="split-offer-text"></p>
+          <button type="button" class="primary" id="split-do">Dividi in due scontrini</button>
+          <button type="button" class="ghost small" id="split-manual">Li divido io</button>
+        </div>
       </div>
 
       <button type="button" class="card list-link" id="list-link" hidden>
@@ -71,12 +87,20 @@
         </div>
         <datalist id="known-names"></datalist>
         <p class="barcode-note" id="barcode-note" hidden></p>
+        <div class="segmented unit-toggle" id="unit-toggle" role="radiogroup" aria-label="Come si vende">
+          <button type="button" data-unit="pz" role="radio" class="active" aria-checked="true">A pezzo</button>
+          <button type="button" data-unit="kg" role="radio" aria-checked="false">A peso (€/kg)</button>
+        </div>
         <div class="add-row">
           <label class="field">
-            <span>Prezzo €</span>
+            <span id="price-label">Prezzo €</span>
             <input id="item-price" type="text" inputmode="decimal" placeholder="0,00" required enterkeyhint="done">
           </label>
-          <label class="field qty-field">
+          <label class="field grams-field" id="grams-field" hidden>
+            <span>Peso in grammi</span>
+            <input id="item-grams" type="text" inputmode="numeric" placeholder="Es. 450" enterkeyhint="done">
+          </label>
+          <label class="field qty-field" id="qty-field">
             <span>Quantità</span>
             <div class="stepper">
               <button type="button" data-step="-1" aria-label="Meno">−</button>
@@ -85,6 +109,7 @@
             </div>
           </label>
         </div>
+        <p class="weight-calc" id="weight-calc" hidden></p>
         <button type="submit" class="primary">Aggiungi</button>
       </form>
 
@@ -192,6 +217,22 @@
         </div>
         <small class="muted">Automatico segue le impostazioni dell'iPhone.</small>
       </div>
+      <div class="card">
+        <h2>Negozi</h2>
+        <div class="store-list" id="store-list"></div>
+        <form class="name-row store-form" id="store-form" autocomplete="off">
+          <input id="store-new" type="text" placeholder="Aggiungi un negozio" enterkeyhint="done" aria-label="Nome del negozio">
+          <button type="submit" class="scan-btn plus-btn" aria-label="Aggiungi negozio">+</button>
+        </form>
+        <small class="muted">Scegli il negozio in alto nella scheda Spesa: l'app ricorda il prezzo di ogni prodotto in ogni negozio. Se in quel negozio non l'hai ancora visto, propone l'ultimo prezzo conosciuto.</small>
+      </div>
+      <div class="card">
+        <label class="check">
+          <input type="checkbox" id="s-haptics">
+          <span>Vibrazione quando scansioni un codice e quando sei vicino o oltre il limite dei buoni</span>
+        </label>
+        <small class="muted">Su iPhone serve iOS 18 o successivo, ed è un colpetto leggero.</small>
+      </div>
       <form class="card settings" id="settings-form">
         <label class="field">
           <span>Valore di un buono (€)</span>
@@ -265,8 +306,13 @@
         <input id="pd-barcode" type="text" inputmode="numeric" placeholder="Facoltativo">
       </label>
       <label class="field">
-        <span>Prezzo €</span>
+        <span id="pd-price-label">Prezzo €</span>
         <input id="pd-price" type="text" inputmode="decimal" placeholder="0,00">
+        <small id="pd-price-note" hidden></small>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="pd-kg">
+        <span>Venduto a peso (il prezzo è al kg)</span>
       </label>
       <p class="pd-status" id="pd-status" hidden></p>
       <div class="pd-history" id="pd-history"></div>
@@ -276,6 +322,31 @@
       <div class="sheet-foot">
         <button type="submit" class="ghost small" value="cancel" formnovalidate>Chiudi</button>
         <button type="submit" class="ghost small danger" value="delete" id="pd-delete">Elimina</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="sheet" id="deal-dialog">
+    <form method="dialog" id="deal-form" autocomplete="off">
+      <div class="sheet-title">
+        <h2>Offerta</h2>
+        <span class="muted small-text" id="deal-title"></span>
+      </div>
+      <div class="deal-types" id="deal-types">
+        <button type="button" data-deal="">Nessuna</button>
+        <button type="button" data-deal="2x1">2x1</button>
+        <button type="button" data-deal="3x2">3x2</button>
+        <button type="button" data-deal="pct">Sconto %</button>
+        <button type="button" data-deal="price">Prezzo scontato</button>
+      </div>
+      <label class="field" id="deal-value-field" hidden>
+        <span id="deal-value-label">Sconto %</span>
+        <input id="deal-value" type="text" inputmode="decimal" enterkeyhint="done">
+      </label>
+      <p class="deal-preview" id="deal-preview"></p>
+      <button type="submit" class="primary" value="save">Applica</button>
+      <div class="sheet-foot">
+        <button type="submit" class="ghost small" value="cancel" formnovalidate>Chiudi</button>
       </div>
     </form>
   </dialog>
