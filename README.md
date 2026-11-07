@@ -9,6 +9,11 @@ App per la spesa: conta i prezzi mentre fai la spesa e ti dice quanti buoni past
 - **Prezzi che cambiano**: tocca il prezzo di un prodotto nello scontrino virtuale (o il messaggio verde che appare dopo la scansione) per correggerlo. Il nuovo prezzo diventa quello ricordato e il vecchio resta nello storico.
 - **Backup**: in Opzioni puoi esportare il database prodotti in un file JSON e reimportarlo (per esempio su un altro telefono). La ricerca online si può disattivare.
 - **Lista**: prepara la lista a casa (scrivi o scegli tra i prodotti salvati e i "Compri spesso"). In negozio spunti i prodotti: ognuno entra nello scontrino virtuale al prezzo ricordato e il totale in alto si aggiorna. Se il prezzo non si conosce ancora, l'app lo chiede alla spunta. Anche scansionando o aggiungendo un prodotto dalla scheda Spesa, la voce della lista si spunta da sola. Alla fine della spesa i prodotti presi escono dalla lista, quelli non trovati restano.
+- **A peso**: nel modulo scegli "A peso (€/kg)", scrivi il prezzo al kg e i grammi (anche "1,2 kg"): l'app calcola il prezzo. Il prodotto resta ricordato come venduto a peso.
+- **Offerte**: tocca "% offerta" su una riga dello scontrino: 2x1, 3x2, sconto in percentuale o prezzo scontato. Il totale e i buoni usano il prezzo reale.
+- **Negozi**: scegli il negozio in alto nella scheda Spesa. Ogni prodotto ricorda il prezzo per negozio; dove non l'hai ancora visto viene proposto l'ultimo prezzo conosciuto. L'elenco (Conad, Lidl, Esselunga) si modifica in Opzioni.
+- **Due scontrini**: se superi il limite dei buoni e con due scontrini spenderesti meno a parte, l'app propone come dividere i prodotti. Ogni scontrino ha i suoi buoni e il suo resto; con ↔ sposti un prodotto, toccando uno scontrino scegli dove vanno i nuovi.
+- **Vibrazione**: un colpetto quando scansioni un codice e quando arrivi vicino o oltre il limite (su iPhone da iOS 18; si disattiva in Opzioni).
 - **Concludi spesa**: salva lo scontrino nello storico e scala i buoni usati dal saldo.
 - **Opzioni**: tema (automatico, chiaro, scuro), valore del buono (predefinito 11 €), massimo buoni per scontrino (predefinito 8), buoni rimasti e buoni mensili.
 
