@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Cash Fresh</title>
   <meta name="description" content="Conta la spesa e controlla i buoni pasto.">
-  <meta name="theme-color" content="#f6f4f9">
+  <meta name="theme-color" content="#251d36">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -16,37 +16,118 @@
   <link rel="stylesheet" href="style.css">
   <script>
     // apply the saved theme before the first paint (no white flash in dark mode)
-    try { var t = (JSON.parse(localStorage.getItem('cashfresh:v1')) || {}).settings.theme; if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+    // the new look is dark by default; light and automatic can still be chosen in Opzioni
+    try { var s = (JSON.parse(localStorage.getItem('cashfresh:v1')) || {}).settings || {}, t = s.theme; if (!s.ui2 && (!t || t === 'auto')) t = 'dark'; if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) { document.documentElement.dataset.theme = 'dark'; }
   </script>
 </head>
 <body>
-  <header class="top">
-    <h1><img src="icons/icon-192.png" alt="" class="logo">Cash Fresh</h1>
-    <nav class="tabs" role="tablist">
-      <button class="tab active" data-view="spesa" role="tab">Spesa</button>
-      <button class="tab" data-view="lista" role="tab">Lista<span class="tab-badge" id="list-badge" hidden></span></button>
-      <button class="tab" data-view="carte" role="tab">Carte</button>
-      <button class="tab" data-view="prodotti" role="tab">Prodotti</button>
-      <button class="tab" data-view="storico" role="tab">Storico</button>
-      <button class="tab" data-view="impostazioni" role="tab">Opzioni</button>
-    </nav>
-  </header>
+  <!-- HOME: the two numbers that matter, quick actions and everything else as rows -->
+  <div class="home" id="home">
+    <header class="home-top">
+      <div class="brand"><img src="icons/icon-192.png" alt="" class="logo"><span>Cash Fresh</span></div>
+      <label class="store-pill" title="Negozio in cui sei">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M4 4h16l1 5a3 3 0 0 1-2 2.8V20H5v-8.2A3 3 0 0 1 3 9zm3 9v5h4v-5zm6 0v5h4v-5z"/></svg>
+        <select id="store-select" aria-label="Negozio in cui sei"></select>
+        <svg class="caret" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+      </label>
+      <button type="button" class="round-btn" id="home-opts" aria-label="Opzioni">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3h-4l-.4 2.7a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1L11 21h4l.4-2.7a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>
+      </button>
+    </header>
 
-  <main>
+    <section class="panel">
+      <span class="panel-grip" aria-hidden="true"></span>
+      <div class="hero" id="hero">
+        <button type="button" class="hero-num" data-open="spesa">
+          <span class="hero-label">Buoni usati <i aria-hidden="true">›</i></span>
+          <span class="hero-val"><span id="h-vouchers">0</span><small id="h-vouchers-of">di 8</small></span>
+          <span class="hero-sub" id="h-vouchers-eur">€ 0,00</span>
+        </button>
+        <button type="button" class="hero-num cash" data-open="spesa">
+          <span class="hero-label">Da pagare a parte <i aria-hidden="true">›</i></span>
+          <span class="hero-val" id="h-cash">0,00 €</span>
+          <span class="hero-sub" id="h-total">Spesa 0,00 €</span>
+        </button>
+      </div>
+      <div class="bar hero-bar" aria-hidden="true"><div class="bar-fill" id="h-bar-fill"></div><div class="bar-ticks" id="h-bar-ticks"></div></div>
+      <p class="hero-hint" id="h-hint"></p>
+
+      <nav class="quick" aria-label="Azioni rapide">
+        <button type="button" class="qa" id="qa-scan">
+          <span class="qa-ic"><svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M8 8v8M11 8v8M14 8v8M17 8v8"/></svg></span>
+          <span class="qa-label">Scansiona</span>
+        </button>
+        <button type="button" class="qa" data-open="carte">
+          <span class="qa-ic"><svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M7 15h4"/><circle cx="16" cy="11.5" r="2" fill="currentColor"/></svg></span>
+          <span class="qa-label">Carte</span>
+        </button>
+        <button type="button" class="qa" data-open="lista">
+          <span class="qa-ic"><svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 7l1.5 1.5L8 6M4 13l1.5 1.5L8 12M11 7.5h9M11 13.5h9M5 18.5h.01M11 18.5h9"/></svg><span class="tab-badge" id="list-badge" hidden></span></span>
+          <span class="qa-label">Lista</span>
+        </button>
+        <button type="button" class="qa" id="qa-more">
+          <span class="qa-ic"><svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg></span>
+          <span class="qa-label">Altro</span>
+        </button>
+      </nav>
+
+      <button type="button" class="store-card" id="store-card" hidden>
+        <span class="ctile mini" id="store-card-tile" aria-hidden="true"></span>
+        <span class="row-text"><strong id="store-card-text"></strong><span>Da mostrare alla cassa</span></span>
+        <span class="chev" aria-hidden="true">›</span>
+      </button>
+
+      <div class="rows">
+        <button type="button" class="row" data-open="spesa">
+          <span class="row-ic"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M6 3h12v18l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5L6 21z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M9 8h6M9 12h6M9 16h3"/></svg></span>
+          <span class="row-text"><strong>Scontrino virtuale</strong><span id="r-cart"></span></span>
+          <span class="chev" aria-hidden="true">›</span>
+        </button>
+        <button type="button" class="row" data-open="lista">
+          <span class="row-ic"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 7l1.5 1.5L8 6M4 13l1.5 1.5L8 12M11 7.5h9M11 13.5h9M5 18.5h.01M11 18.5h9"/></svg></span>
+          <span class="row-text"><strong>Lista della spesa</strong><span id="r-list"></span></span>
+          <span class="chev" aria-hidden="true">›</span>
+        </button>
+        <button type="button" class="row" data-open="carte">
+          <span class="row-ic"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M7 15h4"/><circle cx="16" cy="11.5" r="2" fill="currentColor"/></svg></span>
+          <span class="row-text"><strong>Carte fedeltà</strong><span id="r-cards"></span></span>
+          <span class="stack" id="r-stack" aria-hidden="true"></span>
+          <span class="chev" aria-hidden="true">›</span>
+        </button>
+        <div class="hscroll" id="h-cards" aria-label="Le tue carte"></div>
+        <button type="button" class="row" data-open="prodotti">
+          <span class="row-ic"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M12 3l8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9"/></svg></span>
+          <span class="row-text"><strong>Prodotti</strong><span id="r-prod"></span></span>
+          <span class="chev" aria-hidden="true">›</span>
+        </button>
+        <button type="button" class="row" data-open="storico">
+          <span class="row-ic"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 7.5V12l3 2"/></svg></span>
+          <span class="row-text"><strong>Storico</strong><span id="r-hist"></span></span>
+          <span class="chev" aria-hidden="true">›</span>
+        </button>
+        <button type="button" class="row" data-open="impostazioni">
+          <span class="row-ic"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8" cy="17" r="2" fill="none" stroke="currentColor" stroke-width="2"/></svg></span>
+          <span class="row-text"><strong>Opzioni</strong><span id="r-opts"></span></span>
+          <span class="chev" aria-hidden="true">›</span>
+        </button>
+      </div>
+    </section>
+  </div>
+  <div class="scrim" id="scrim" aria-hidden="true"></div>
+  <div class="bsheet" id="bsheet" role="dialog" aria-labelledby="bs-title">
+    <div class="bs-head" id="bs-head">
+      <span class="grab" aria-hidden="true"></span>
+      <div class="bs-bar">
+        <div class="bs-titles"><strong id="bs-title">Scontrino virtuale</strong><span id="bs-sub"></span></div>
+        <span class="bs-peek-total" id="bs-peek-total"></span>
+        <button type="button" class="round-btn small" id="bs-close" aria-label="Chiudi">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </div>
+  <main id="bs-body">
     <!-- SPESA -->
     <section id="view-spesa" class="view active">
-      <label class="store-row">
-        <span class="store-pin" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M4 4h16l1 5a3 3 0 0 1-2 2.8V20H5v-8.2A3 3 0 0 1 3 9zm3 9v5h4v-5zm6 0v5h4v-5z"/></svg>
-        </span>
-        <span class="store-label">Negozio</span>
-        <select id="store-select" aria-label="Negozio in cui sei"></select>
-      </label>
-      <button type="button" class="card list-link store-card" id="store-card" hidden>
-        <span class="ctile mini" id="store-card-tile" aria-hidden="true"></span>
-        <span class="list-link-text" id="store-card-text"></span>
-        <span class="list-link-go" aria-hidden="true">›</span>
-      </button>
       <div class="card summary" id="summary">
         <div class="total-row">
           <span class="label">Totale spesa</span>
@@ -177,7 +258,7 @@
     <!-- CARTE FEDELTA -->
     <section id="view-carte" class="view">
       <div class="wallet-head">
-        <h2 class="wallet-title">Carte fedeltà</h2>
+        <h2 class="wallet-title">Le tue carte</h2>
         <button type="button" class="icon-btn" id="card-add-top" aria-label="Aggiungi carta">
           <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7z"/></svg>
         </button>
@@ -295,6 +376,7 @@
       </div>
     </section>
   </main>
+  </div>
 
   <div class="scanner" id="scanner" hidden>
     <video id="scan-video" playsinline muted autoplay></video>
@@ -455,9 +537,25 @@
     </form>
   </dialog>
 
+
+  <dialog class="sheet" id="more-dialog">
+    <form method="dialog" class="more">
+      <span class="grab" aria-hidden="true"></span>
+      <h2>Altro</h2>
+      <button type="submit" class="row" value="prodotti"><span class="row-text"><strong>Prodotti salvati</strong><span>Prezzi, negozi e storico dei prezzi</span></span><span class="chev" aria-hidden="true">›</span></button>
+      <button type="submit" class="row" value="nuovo"><span class="row-text"><strong>Nuovo prodotto</strong><span>Salvalo con il suo prezzo</span></span><span class="chev" aria-hidden="true">›</span></button>
+      <button type="submit" class="row" value="carta"><span class="row-text"><strong>Aggiungi carta fedeltà</strong><span>Scansiona la tessera o scrivi il numero</span></span><span class="chev" aria-hidden="true">›</span></button>
+      <button type="submit" class="row" value="storico"><span class="row-text"><strong>Storico</strong><span>Le spese concluse</span></span><span class="chev" aria-hidden="true">›</span></button>
+      <button type="submit" class="row" value="negozi"><span class="row-text"><strong>Negozi</strong><span>Aggiungi o togli supermercati</span></span><span class="chev" aria-hidden="true">›</span></button>
+      <button type="submit" class="row" value="impostazioni"><span class="row-text"><strong>Opzioni</strong><span>Buoni, tema, vibrazione, backup</span></span><span class="chev" aria-hidden="true">›</span></button>
+      <div class="sheet-foot"><button type="submit" class="ghost small" value="cancel">Chiudi</button></div>
+    </form>
+  </dialog>
+
   <button type="button" class="toast" id="toast" role="status" hidden></button>
 
   <script src="app.js"></script>
   <script src="cards.js"></script>
+  <script src="home.js"></script>
 </body>
 </html>
