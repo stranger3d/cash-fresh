@@ -94,6 +94,7 @@ function renderCards() {
   }).join('');
   $('wallet-empty').hidden = state.cards.length > 0;
   paintStoreCard();
+  if (typeof renderHome === 'function') renderHome();
 }
 
 function paintStoreCard() {

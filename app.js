@@ -3,7 +3,7 @@
 const STORE_KEY = 'cashfresh:v1';
 
 const DEFAULTS = {
-  settings: { value: 1100, maxPerTrip: 8, wallet: 20, monthly: 20, online: true, theme: 'auto',
+  settings: { value: 1100, maxPerTrip: 8, wallet: 20, monthly: 20, online: true, theme: 'dark', ui2: true,
     stores: ['Conad', 'Lidl', 'Esselunga'], store: '', haptics: true }, // amounts in cents
   // receipt line: { id, name, price (cents, per kg when kg), qty, barcode,
   //   kg (sold by weight), grams, deal: { t: '2x1'|'3x2'|'pct'|'price', v }, r (receipt 0 or 1) }
@@ -26,8 +26,14 @@ function load() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORE_KEY));
     if (raw && raw.settings) {
+      const settings = { ...DEFAULTS.settings, ...raw.settings };
+      // new home (Nov 2026): the dark look becomes the default once; light/auto stay available
+      if (!raw.settings.ui2) {
+        if (!settings.theme || settings.theme === 'auto') settings.theme = 'dark';
+        settings.ui2 = true;
+      }
       return {
-        settings: { ...DEFAULTS.settings, ...raw.settings },
+        settings,
         cart: Array.isArray(raw.cart) ? raw.cart : [],
         list: Array.isArray(raw.list) ? raw.list : [],
         history: Array.isArray(raw.history) ? raw.history : [],
@@ -120,6 +126,7 @@ function render() {
   renderCatalog();
   renderSummary();
   renderHistory();
+  if (typeof renderHome === 'function') renderHome();
 }
 
 // ---------- one or two receipts ----------
@@ -1006,13 +1013,16 @@ function renderSettings() {
 }
 
 // ---------- events ----------
-function showView(view) {
-  document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+// Every screen lives in the bottom sheet over the home: showing one also slides the sheet up.
+let currentView = 'spesa';
+function showView(view, keepClosed) {
+  const changed = view !== currentView;
+  currentView = view;
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + view));
   if (view === 'impostazioni') renderSettings();
-  window.scrollTo(0, 0);
+  if (changed) $('bs-body').scrollTop = 0;
+  if (typeof sheetShows === 'function') sheetShows(view, keepClosed);
 }
-document.querySelectorAll('.tab').forEach((btn) => btn.addEventListener('click', () => showView(btn.dataset.view)));
 
 // ---------- theme ----------
 function applyTheme() {
@@ -1020,7 +1030,7 @@ function applyTheme() {
   const root = document.documentElement;
   if (t === 'light' || t === 'dark') root.dataset.theme = t; else delete root.dataset.theme;
   const dark = t === 'dark' || (t !== 'light' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#131118' : '#f6f4f9');
+  document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#251d36' : '#e8dff4');
   document.querySelectorAll('#theme-picker button').forEach((b) => {
     const on = b.dataset.theme === (t || 'auto');
     b.classList.toggle('active', on);
@@ -1881,12 +1891,6 @@ $('s-haptics').addEventListener('change', (e) => {
 applyTheme();
 render();
 
-// the list's mini receipt sticks just under the header
-function measureHeader() {
-  document.documentElement.style.setProperty('--header-h', document.querySelector('.top').offsetHeight + 'px');
-}
-measureHeader();
-window.addEventListener('resize', measureHeader);
 
 // ---------- offline + updates ----------
 // The service worker keeps a copy of the app so it opens in the store without signal.
